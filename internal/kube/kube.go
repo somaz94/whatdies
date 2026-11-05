@@ -62,7 +62,7 @@ var quiet = map[string]bool{
 	"annotate": true, "api-resources": true, "api-versions": true, "auth": true, "autoscale": true,
 	"certificate": true, "cluster-info": true, "completion": true, "config": true, "cordon": true, "cp": true,
 	"create": true, "describe": true, "diff": true, "events": true, "explain": true, "expose": true, "get": true,
-	"kustomize": true, "label": true, "logs": true, "options": true, "plugin": true, "port-forward": true,
+	"help": true, "kustomize": true, "label": true, "logs": true, "options": true, "plugin": true, "port-forward": true,
 	"rollout": true, "set": true, "top": true, "uncordon": true, "version": true, "wait": true,
 }
 

@@ -29,16 +29,19 @@ echo $(terraform destroy)
 | `xargs`, `parallel`, `find -exec` | The command is read, and its run-time arguments count as unknown |
 | `parallel` with no command word | `parallel ::: 'x'` is read as the command `x`. Commands read from a file or a pipe are ask |
 | An unknown wrapper, such as `aws-vault exec prod -- terraform destroy` or `ssh host "kubectl delete ns x"` | Ask, if its arguments contain an infrastructure tool and a destructive verb |
-| `./deploy.sh`, `bash deploy.sh`, `~/deploy.sh`, `python3 run.py`, `python3 -c '...'`, `perl -e '...' -e '...'` | The program text is searched one level deep. A hit is ask |
+| `./deploy.sh`, `bash deploy.sh`, `~/deploy.sh`, `bash "$HOME/deploy.sh"`, `python3 run.py`, `python3 -c '...'`, `perl -e '...' -e '...'` | The program text is searched one level deep. A hit is ask |
 | `bash -s x <<'EOF'`, `bash /dev/stdin <<< '...'`, `. /dev/stdin` | Read like the here-document it is. The words after `-s` are arguments, not a script |
+| `ssh host <<'EOF'`, `docker exec -i c sh <<'EOF'` | The here-document is searched like the wrapper's arguments |
 | `echo '...' > x.sh && bash x.sh`, or a here-document written to a file and then run | Every write to it in the line is searched, and so is the file on disk, since a write can be conditional or an append. Anything else that creates the script just before running it, such as `curl -o`, is ask |
 | `git rebase -x`, `git bisect run`, `git submodule foreach`, a `git -c` setting that holds a command, `GIT_SSH_COMMAND` and similar variables | The command git would run is searched. Other git commands are left alone, so a commit message can say anything |
 | `sed 's/x/y/e'`, `sed '1e ...'`, `rg --pre` | The command they would run is searched. Other uses are left alone, since search text is not a command |
-| `make deploy` | The target's recipe and prerequisites are searched, with variables from the file, the command's environment and make's command line filled in. A hit is ask, and `make test` stays silent |
-| `eval "$X"`, `bash -c "$X"`, `curl ... \| bash`, `curl ... \| bash -s`, `python3 "$SCRIPT"`, `$BIN delete ...` | Ask, since the command is not knowable. `source "$F"` is the exception: it stays silent, because `source "$HOME/.nvm/nvm.sh"` is too common to prompt on |
+| `make deploy` | The target's recipe and prerequisites are searched, with variables, `$@`, `%` patterns, `define` and includes filled in. A hit is ask, and `make test` stays silent. A computed include is not read, so the target may be missed |
+| `eval "$X"`, `bash -c "$X"`, `curl ... \| bash`, `curl ... \| bash -s`, `python3 "$SCRIPT"`, `git rebase -x "$X"`, `$BIN delete ...` | Ask, since the command is not knowable. `source "$F"` is the exception: it stays silent, because `source "$HOME/.nvm/nvm.sh"` is too common to prompt on |
 | `k`, `tf`, `tg`, `kubecolor` | Treated as `kubectl`, `terraform`, `terragrunt` and `kubectl` |
 
 Steps earlier in the same line count. After a computed `cd`, a `cd` that may not have run (`false && cd x; ...`, or inside an `if`), a `kubectl config use-context`, a `terraform workspace select`, an `aws eks update-kubeconfig`, a `source` or an `env -u KUBECONFIG`, what could be looked up now would describe the wrong target, so the verdict is ask with no lookup.
+
+Lines that only print or define text are skipped when searching a program, so `echo "usage: terraform destroy"` and `alias kd='kubectl delete'` do not ask. `--help` on a tool whatdies knows is no decision, because it prints and exits.
 
 <br/>
 

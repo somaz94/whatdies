@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"maps"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -64,25 +65,40 @@ type interpreterSpec struct {
 	// cluster matches a flag group ending in the code flag, as in perl -ne.
 	cluster *regexp.Regexp
 	value   map[string]bool
+	// attached are flags whose value can follow directly, so ruby -rtime is a
+	// library whose name happens to end in the code flag.
+	attached []string
 }
 
 func (s interpreterSpec) isCode(v string) bool {
-	return s.code[v] || (s.cluster != nil && s.cluster.MatchString(v))
+	if s.code[v] {
+		return true
+	}
+	for _, flag := range s.attached {
+		if strings.HasPrefix(v, flag) {
+			return false
+		}
+	}
+	return s.cluster != nil && s.cluster.MatchString(v)
 }
 
 var interpreterSpecs = map[string]interpreterSpec{
 	"node":   {code: set("-e", "--eval", "-p", "--print", "-pe"), value: set("-r", "--require", "--import", "--loader", "-C", "--conditions")},
-	"perl":   {cluster: regexp.MustCompile(`^-[A-Za-z0-9]*[eE]$`), value: set("-I")},
-	"php":    {code: set("-r"), value: set("-d", "-c", "-z")},
-	"python": {cluster: regexp.MustCompile(`^-[A-Za-z]*c$`), value: set("-W", "-X")},
-	"ruby":   {cluster: regexp.MustCompile(`^-[A-Za-z]*e$`), value: set("-r", "-I", "-C", "-E")},
+	"perl":   {cluster: regexp.MustCompile(`^-[A-Za-z0-9]*[eE]$`), value: set("-I"), attached: []string{"-I", "-M", "-m"}},
+	"php":    {code: set("-r", "-B", "-R", "-E"), value: set("-d", "-c", "-z")},
+	"python": {cluster: regexp.MustCompile(`^-[A-Za-z]*c$`), value: set("-W", "-X"), attached: []string{"-W", "-X"}},
+	"ruby":   {cluster: regexp.MustCompile(`^-[A-Za-z]*e$`), value: set("-r", "-I", "-C", "-E"), attached: []string{"-r", "-I", "-C", "-E"}},
 }
 
 // stdinPaths name a program file that is really stdin.
 var stdinPaths = set("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 
 // shellValueOptions take the next word, which must not be read as a script.
-var shellValueOptions = set("-o", "+o", "-O", "+O", "--init-file", "--rcfile")
+var shellValueOptions = set("--init-file", "--rcfile")
+
+// optionCluster matches a flag group holding o or O, as in -euo pipefail, where the
+// next word is the option's name.
+var optionCluster = regexp.MustCompile(`^[-+][A-Za-z]*[oO][A-Za-z]*$`)
 
 func (a *analyzer) emit(args []Arg, inline map[string]Arg, in stdin, f flags) {
 	if len(a.out.Invocations) >= maxInvocations {
@@ -124,11 +140,22 @@ func (a *analyzer) emit(args []Arg, inline map[string]Arg, in stdin, f flags) {
 		return
 	case name == "find":
 		a.find(rest, inline, in, f)
+		a.add(Invocation{Tool: name}, inline, in)
+		return
 	case name == "eval":
 		a.eval(rest, f)
 		return
 	case shells[name]:
+		outer := a.env
+		a.env = maps.Clone(outer)
+		maps.Copy(a.env, inline)
 		a.shell(rest, in, f)
+		a.env = outer
+		return
+	case name == "unset":
+		for _, x := range rest {
+			a.env[x.Value] = computed
+		}
 		return
 	case name == "source" || name == ".":
 		a.script(rest, inline, in, f)
@@ -165,6 +192,10 @@ func (a *analyzer) emit(args []Arg, inline map[string]Arg, in stdin, f flags) {
 // ScriptTool marks an invocation whose first argument is a program file to read.
 const ScriptTool = "<script>"
 
+// BlockTool marks a command group that redirects its output. It reads as words
+// because reasons quote it: "x is written by a command group".
+const BlockTool = "a command group"
+
 // CodeTool marks an invocation whose first argument is program text to read.
 const CodeTool = "<code>"
 
@@ -190,7 +221,6 @@ func (a *analyzer) add(inv Invocation, inline map[string]Arg, in stdin) {
 	}
 	inv.Env = env
 	inv.Dir, inv.DirKnown = a.dir, a.dirKnown
-	inv.Piped = in.piped || in.file != nil
 	inv.HasHeredoc, inv.HeredocLiteral, inv.Heredoc = in.hasHeredoc, in.heredocLiteral, in.heredoc
 	inv.TargetChange = a.targetChange
 	inv.Writes = in.writes
@@ -218,8 +248,8 @@ func (a *analyzer) noteTargetChange(name string, args []Arg) {
 	case "kubectx", "kubens", "kctx":
 		reason = name
 	case "kubectl", "oc":
-		if name == "oc" && (first(args) == "project" || first(args) == "login") {
-			reason = "oc " + first(args)
+		if name == "oc" && (has("project") || has("login")) {
+			reason = "oc project or login"
 		}
 		for _, s := range []string{"config use-context", "config use", "config set-context", "config set-cluster"} {
 			if has(s) {
@@ -246,13 +276,6 @@ func (a *analyzer) noteTargetChange(name string, args []Arg) {
 	if reason != "" {
 		a.targetChange = reason
 	}
-}
-
-func first(args []Arg) string {
-	if len(args) == 0 {
-		return ""
-	}
-	return args[0].Value
 }
 
 func (a *analyzer) unwrap(name string, w wrapper, args []Arg, inline map[string]Arg, in stdin, f flags) {
@@ -517,6 +540,9 @@ loop:
 			return
 		}
 		v := x.Value
+		if optionCluster.MatchString(v) {
+			i++
+		}
 		switch {
 		case v == "--":
 			if fromStdin && !command {

@@ -9,28 +9,48 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"unicode"
 )
 
 // maxBytes bounds a read: a Makefile or script is not this large, and a file
 // the agent can write must not be able to stall every later command.
 const maxBytes = 1 << 20
 
-const gap = `\b[^\n]{0,120}?\b`
+// gap stops at a shell separator, so a word in the next command is not this one's verb.
+const gap = `\b[^\n|;&]{0,120}?\b`
+
+const (
+	separator = `[ \t"',]+`
+	// options are what may stand between a tool and a verb that must follow it
+	// directly, since debug and exec also turn up as namespaces and file names.
+	options = `(?:` + separator + `(?:-n|--namespace|--context|--kubeconfig)` + separator + `[^ \t"',]+|` + separator + `-[^ \t"',=]+=[^ \t"',]+|` + separator + `-n[^ \t"',]+)*`
+
+	terraformTool = `\b(?:terraform|tofu|terragrunt)`
+	// The short names must not be the tail of -k, .tf or a path.
+	terraformAlias = `(?:` + terraformTool + `|(?:^|[^-\w./])(?:tf|tg))`
+	kubeTool       = `\b(?:kubectl|kubecolor|oc)`
+)
 
 var mentions = regexp.MustCompile(`(?i)` +
-	`\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `(?:apply|destroy|taint|force-unlock)\b` +
-	`|\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `state` + gap + `(?:rm|mv|push)\b` +
-	`|\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `workspace` + gap + `delete\b` +
-	`|\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `init` + gap + `(?:migrate-state|force-copy)\b` +
-	`|\b(?:terraform|tofu|terragrunt)` + gap + `import\b` +
-	`|\b(?:kubectl|kubecolor|oc)` + gap + `(?:delete|drain|replace|taint|exec|attach|debug)\b` +
-	`|\b(?:kubectl|kubecolor|oc)` + gap + `scale` + gap + `replicas[= ]0\b` +
-	`|\b(?:kubectl|kubecolor|oc)` + gap + `apply` + gap + `prune\b` +
-	`|\b(?:kubectl|kubecolor|oc)` + gap + `patch` + gap + `finalizers\b` +
-	`|\bk[ \t]+(?:delete|drain|replace|taint|exec|attach|debug)\b` +
+	terraformAlias + gap + `(?:apply|destroy|taint|force-unlock)\b` +
+	`|` + terraformAlias + gap + `state` + gap + `(?:rm|mv|push)\b` +
+	`|` + terraformAlias + gap + `workspace` + gap + `delete\b` +
+	`|` + terraformAlias + gap + `init` + gap + `(?:migrate-state|force-copy)\b` +
+	`|` + terraformTool + options + separator + `import\b` +
+	`|` + kubeTool + gap + `(?:delete|drain|replace|taint)\b` +
+	`|` + kubeTool + options + separator + `(?:exec|attach|debug)\b` +
+	`|` + kubeTool + gap + `scale` + gap + `replicas[= ]0\b` +
+	`|` + kubeTool + gap + `apply` + gap + `prune\b` +
+	`|` + kubeTool + gap + `patch` + gap + `finalizers\b` +
+	`|(?:^|[^-\w.])k[ \t]+(?:delete|drain|replace|taint|exec|attach|debug)\b` +
 	`|\bhelm` + gap + `(?:uninstall|delete|rollback|upgrade)\b` +
 	`|\bhelmfile` + gap + `(?:apply|delete|destroy|sync)\b`)
+
+// inert matches lines that only print or define text: a usage message and an alias
+// run nothing, and aliases do not expand in a script anyway.
+var inert = regexp.MustCompile("^[ \\t]*(?:[@-]*(?:echo|printf)\\b[^|;&$`>]*|alias[ \\t].*)$")
 
 // continuation joins lines ending in a backslash, which split a command in two.
 var continuation = strings.NewReplacer("\\\r\n", " ", "\\\n", " ")
@@ -50,12 +70,19 @@ func Mention(text string) string {
 			continue
 		}
 		logical.WriteString(line)
-		if m := mentions.FindString(logical.String()); m != "" {
+		if m := mentionIn(logical.String()); m != "" {
 			return m
 		}
 		logical.Reset()
 	}
-	return mentions.FindString(logical.String())
+	return mentionIn(logical.String())
+}
+
+func mentionIn(line string) string {
+	if inert.MatchString(line) {
+		return ""
+	}
+	return strings.TrimLeftFunc(mentions.FindString(line), func(r rune) bool { return !unicode.IsLetter(r) })
 }
 
 func isComment(line string) bool {
@@ -101,11 +128,15 @@ func isBinary(text string) bool {
 type rule struct {
 	prereqs []string
 	recipe  []string
+	vars    map[string]string
 }
 
 var (
-	ruleLine = regexp.MustCompile(`^([A-Za-z0-9_./%-]+(?:[ \t]+[A-Za-z0-9_./%-]+)*)[ \t]*:([^=].*)?$`)
-	varLine  = regexp.MustCompile(`^[ \t]*(?:(?:export|override|private)[ \t]+)*([A-Za-z0-9_.]+)[ \t]*([:?+!]?)=[ \t]*(.*)$`)
+	ruleLine        = regexp.MustCompile(`^([A-Za-z0-9_./%-]+(?:[ \t]+[A-Za-z0-9_./%-]+)*)[ \t]*:([^=].*)?$`)
+	varLine         = regexp.MustCompile(`^[ \t]*(?:(?:export|override|private)[ \t]+)*([A-Za-z0-9_.]+)[ \t]*(:{1,3}|[?+!])?=[ \t]*(.*)$`)
+	defineLine      = regexp.MustCompile(`^[ \t]*(?:(?:export|override|private)[ \t]+)*define[ \t]+([A-Za-z0-9_.]+)`)
+	makeConditional = regexp.MustCompile(`^[ \t]*(?:ifeq|ifneq|ifdef|ifndef|else|endif)\b`)
+	includeLine     = regexp.MustCompile(`^-?s?include[ \t]+(.+)$`)
 )
 
 type makefileDoc struct {
@@ -122,11 +153,30 @@ func parseMakefile(text string, env map[string]string) makefileDoc {
 		doc.vars = map[string]string{}
 	}
 	var current []*rule
+	var defining string
+	var body []string
 	for _, line := range strings.Split(continuation.Replace(text), "\n") {
+		if defining != "" {
+			if strings.TrimSpace(line) == "endef" {
+				doc.vars[defining] = strings.Join(body, "\n")
+				defining, body = "", nil
+			} else {
+				body = append(body, line)
+			}
+			continue
+		}
 		if strings.HasPrefix(line, "\t") {
 			for _, r := range current {
 				r.recipe = append(r.recipe, line)
 			}
+			continue
+		}
+		// A conditional or a comment between recipe lines does not end the rule.
+		if makeConditional.MatchString(line) || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if m := defineLine.FindStringSubmatch(line); m != nil {
+			defining = m[1]
 			continue
 		}
 		if m := varLine.FindStringSubmatch(line); m != nil {
@@ -141,26 +191,36 @@ func parseMakefile(text string, env map[string]string) makefileDoc {
 			}
 			continue
 		}
-		current = nil
-		body, _, _ := strings.Cut(m[2], "#")
-		prereqs, inline, _ := strings.Cut(body, ";")
-		for _, name := range strings.Fields(m[1]) {
-			r := doc.rules[name]
-			if r == nil {
-				r = &rule{}
-				doc.rules[name] = r
-			}
-			r.prereqs = append(r.prereqs, strings.Fields(prereqs)...)
-			if strings.TrimSpace(inline) != "" {
-				r.recipe = append(r.recipe, inline)
-			}
-			current = append(current, r)
-			if doc.first == "" && !strings.HasPrefix(name, ".") {
-				doc.first = name
-			}
-		}
+		current = doc.addRule(strings.Fields(m[1]), m[2])
 	}
 	return doc
+}
+
+func (d *makefileDoc) addRule(names []string, after string) []*rule {
+	body, _, _ := strings.Cut(after, "#")
+	prereqs, inline, _ := strings.Cut(body, ";")
+	targetVar := varLine.FindStringSubmatch(prereqs)
+	var added []*rule
+	for _, name := range names {
+		r := d.rules[name]
+		if r == nil {
+			r = &rule{vars: map[string]string{}}
+			d.rules[name] = r
+		}
+		if targetVar != nil {
+			r.vars[targetVar[1]] = targetVar[3]
+		} else {
+			r.prereqs = append(r.prereqs, strings.Fields(prereqs)...)
+		}
+		if strings.TrimSpace(inline) != "" {
+			r.recipe = append(r.recipe, inline)
+		}
+		added = append(added, r)
+		if d.first == "" && !strings.HasPrefix(name, ".") && !strings.Contains(name, "%") {
+			d.first = name
+		}
+	}
+	return added
 }
 
 func (d makefileDoc) assign(name, op, value string) {
@@ -177,10 +237,15 @@ func (d makefileDoc) assign(name, op, value string) {
 // expand fills in variables, since `$(TF) destroy` is how a Makefile usually spells
 // it. It repeats until nothing changes: one pass over a map resolves a nested
 // variable only when the order happens to suit it, which made the verdict random.
-func (d makefileDoc) expand(line string) string {
-	for range len(d.vars) + 1 {
+func (d makefileDoc) expand(line string, local map[string]string) string {
+	vars := d.vars
+	if len(local) > 0 {
+		vars = maps.Clone(d.vars)
+		maps.Copy(vars, local)
+	}
+	for range len(vars) + 1 {
 		before := line
-		for name, value := range d.vars {
+		for name, value := range vars {
 			line = strings.ReplaceAll(line, "$("+name+")", value)
 			line = strings.ReplaceAll(line, "${"+name+"}", value)
 			if len(name) == 1 {
@@ -194,9 +259,37 @@ func (d makefileDoc) expand(line string) string {
 	return line
 }
 
+// matched is a rule that builds a target, with the stem a % pattern captured.
+type matched struct {
+	rule *rule
+	stem string
+}
+
+func (d makefileDoc) match(name string) []matched {
+	if r := d.rules[name]; r != nil {
+		return []matched{{rule: r}}
+	}
+	var out []matched
+	for _, pattern := range slices.Sorted(maps.Keys(d.rules)) {
+		prefix, suffix, ok := strings.Cut(pattern, "%")
+		if ok && len(name) > len(prefix)+len(suffix) && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, suffix) {
+			out = append(out, matched{d.rules[pattern], name[len(prefix) : len(name)-len(suffix)]})
+		}
+	}
+	return out
+}
+
+// automatic fills in the variables make sets per target, as in `terraform $@`.
+func automatic(text, target, stem string) string {
+	return strings.NewReplacer(
+		"$@", target, "$(@)", target, "${@}", target,
+		"$*", stem, "$(*)", stem, "${*}", stem,
+	).Replace(text)
+}
+
 // Make returns the first infrastructure command the named targets and their
 // prerequisites would run. A target the file does not define may come from an
-// include this does not read, so the whole file is searched instead. env is the
+// include this cannot read, so the whole file is searched instead. env is the
 // environment the command sets, and vars the assignments on make's command line,
 // which outrank the file.
 func Make(dir, file string, targets []string, env, vars map[string]string) string {
@@ -204,6 +297,7 @@ func Make(dir, file string, targets []string, env, vars map[string]string) strin
 	if !ok {
 		return ""
 	}
+	text = withIncludes(dir, text)
 	doc := parseMakefile(text, env)
 	maps.Copy(doc.vars, vars)
 	if len(targets) == 0 {
@@ -225,19 +319,50 @@ func Make(dir, file string, targets []string, env, vars map[string]string) strin
 			continue
 		}
 		seen[name] = true
-		r := doc.rules[name]
-		if r == nil {
-			if contains(targets, name) {
-				return Mention(text)
+		rules := doc.match(name)
+		if len(rules) == 0 && contains(targets, name) {
+			return Mention(text)
+		}
+		for _, m := range rules {
+			recipe := automatic(strings.Join(m.rule.recipe, "\n"), name, m.stem)
+			if hit := Mention(doc.expand(recipe, m.rule.vars)); hit != "" {
+				return hit
 			}
-			continue
+			prereqs := strings.ReplaceAll(strings.Join(m.rule.prereqs, " "), "%", m.stem)
+			pending = append(pending, strings.Fields(doc.expand(automatic(prereqs, name, m.stem), m.rule.vars))...)
 		}
-		if m := Mention(doc.expand(strings.Join(r.recipe, "\n"))); m != "" {
-			return m
-		}
-		pending = append(pending, r.prereqs...)
 	}
 	return ""
+}
+
+// withIncludes appends the files an include line names, so a target or variable
+// defined there is found. A name that is computed or missing is skipped, which
+// leaves the target undefined and sends the search to the whole text.
+func withIncludes(dir, text string) string {
+	seen := map[string]bool{}
+	for pass := 0; pass < 5 && len(text) < maxBytes; pass++ {
+		added := false
+		for _, line := range strings.Split(text, "\n") {
+			m := includeLine.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			for _, name := range strings.Fields(m[1]) {
+				if seen[name] || strings.ContainsAny(name, "$*?[") {
+					continue
+				}
+				seen[name] = true
+				if body, ok := makefile(dir, name); ok {
+					text += "\n" + body
+					added = true
+				}
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return text
 }
 
 func contains(list []string, s string) bool {

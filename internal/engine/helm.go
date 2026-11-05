@@ -108,7 +108,7 @@ var helmfileValueFlags = map[string]bool{
 }
 
 var helmfileReadOnly = map[string]bool{
-	"build": true, "deps": true, "diff": true, "fetch": true, "lint": true, "list": true,
+	"build": true, "deps": true, "diff": true, "fetch": true, "help": true, "lint": true, "list": true,
 	"repos": true, "status": true, "template": true, "version": true, "write-values": true,
 }
 

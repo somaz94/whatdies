@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 
 	"github.com/somaz94/whatdies/internal/kube"
 	"github.com/somaz94/whatdies/internal/registry"
@@ -46,6 +48,9 @@ func Evaluate(ctx context.Context, command, cwd string, d Deps) verdict.Verdict 
 }
 
 func judge(ctx context.Context, inv shell.Invocation, earlier []shell.Invocation, d Deps) verdict.Verdict {
+	if asksForHelp(inv) {
+		return verdict.Verdict{}
+	}
 	switch inv.Tool {
 	case "":
 		return judgeComputedHead(inv)
@@ -73,6 +78,25 @@ func judge(ctx context.Context, inv shell.Invocation, earlier []shell.Invocation
 		return judgeReader(inv)
 	}
 	return judgeOther(inv)
+}
+
+// asksForHelp finds `terraform destroy -help` and the like, which print and exit. A
+// word after another option may be that option's value, so it does not count.
+func asksForHelp(inv shell.Invocation) bool {
+	if !slices.Contains(shell.KnownTools, inv.Tool) {
+		return false
+	}
+	before := ""
+	for _, a := range inv.Args {
+		if a.Value == "--" {
+			return false
+		}
+		if a.Literal && (a.Value == "-h" || a.Value == "-help" || a.Value == "--help") && !strings.HasPrefix(before, "-") {
+			return true
+		}
+		before = a.Value
+	}
+	return false
 }
 
 func judgeTerraform(ctx context.Context, inv shell.Invocation, earlier []shell.Invocation, d Deps) verdict.Verdict {

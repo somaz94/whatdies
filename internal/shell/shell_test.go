@@ -285,12 +285,6 @@ func TestComputedArgumentsFromXargsAndFind(t *testing.T) {
 }
 
 func TestStdin(t *testing.T) {
-	if !last(t, `cat x | kubectl apply -f -`).Piped {
-		t.Error("pipe not noticed")
-	}
-	if !last(t, `kubectl apply -f - < x`).Piped {
-		t.Error("file redirect not noticed")
-	}
 	inv := last(t, "kubectl apply -f - <<EOF\nkind: Pod\nEOF")
 	if !inv.HasHeredoc || !inv.HeredocLiteral || !strings.Contains(inv.Heredoc, "kind: Pod") {
 		t.Errorf("heredoc = %+v", inv)
@@ -404,17 +398,19 @@ func TestProblemsForCommandsThatCannotBeRead(t *testing.T) {
 
 func TestTextHandedToAShell(t *testing.T) {
 	cases := map[string]string{
-		`bash --command='tool x'`:       "tool",
-		`fish --command 'tool x'`:       "tool",
-		`bash -o pipefail -c 'tool x'`:  "tool",
-		`bash -c -- 'tool x'`:           "tool",
-		`bash -s -c 'tool x'`:           "tool",
-		"bash -s y <<E\ntool x\nE":      "tool",
-		"bash /dev/stdin <<E\ntool\nE":  "tool",
-		"source /dev/fd/0 <<E\ntool\nE": "tool",
-		`parallel ::: 'tool x'`:         "tool",
-		`sudo -- tool x`:                "tool",
-		`command -p tool x`:             "tool",
+		`bash --command='tool x'`:        "tool",
+		`fish --command 'tool x'`:        "tool",
+		`bash -o pipefail -c 'tool x'`:   "tool",
+		`bash -euo pipefail -c 'tool x'`: "tool",
+		`bash +o posix -c 'tool x'`:      "tool",
+		`bash -c -- 'tool x'`:            "tool",
+		`bash -s -c 'tool x'`:            "tool",
+		"bash -s y <<E\ntool x\nE":       "tool",
+		"bash /dev/stdin <<E\ntool\nE":   "tool",
+		"source /dev/fd/0 <<E\ntool\nE":  "tool",
+		`parallel ::: 'tool x'`:          "tool",
+		`sudo -- tool x`:                 "tool",
+		`command -p tool x`:              "tool",
 	}
 	for cmd, want := range cases {
 		if inv := last(t, cmd); inv.Tool != want {

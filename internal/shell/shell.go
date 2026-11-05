@@ -45,8 +45,6 @@ type Invocation struct {
 	// Dir is the working directory; DirKnown is false when the text cannot settle it.
 	Dir      string
 	DirKnown bool
-	// Piped means stdin comes from an earlier command or a file.
-	Piped bool
 	// HasHeredoc is true when stdin is a here-document; HeredocLiteral when its
 	// text has no expansions, in which case Heredoc holds it.
 	HasHeredoc     bool
@@ -75,7 +73,12 @@ func (i Invocation) WritesFile(path string) bool {
 // the option=value and -ovalue forms.
 func (i Invocation) ArgNamesFile(path string) bool {
 	base := filepath.Base(path)
-	for _, v := range i.Literals() {
+	for _, a := range i.Args {
+		a = a.program()
+		if !a.Literal {
+			continue
+		}
+		v := a.Value
 		if strings.HasPrefix(v, "-") && !strings.HasPrefix(v, "--") && len(v) > 2 && filepath.Base(v[2:]) == base {
 			return true
 		}
@@ -174,6 +177,9 @@ func (a *analyzer) stmt(s *syntax.Stmt, f flags) {
 		a.substs(r.Word, f)
 		a.substs(r.Hdoc, f)
 	}
+	if _, simple := s.Cmd.(*syntax.CallExpr); !simple {
+		defer a.recordBlockWrites(s, f)
+	}
 	switch c := s.Cmd.(type) {
 	case *syntax.CallExpr:
 		a.call(c, s, f)
@@ -238,6 +244,14 @@ func (a *analyzer) stmt(s *syntax.Stmt, f flags) {
 		if c != nil {
 			a.substs(c, f)
 		}
+	}
+}
+
+// recordBlockWrites notes the file a command group writes, as in { echo x; } > y.
+// What it holds is not known, which judges of later steps treat as a reason to ask.
+func (a *analyzer) recordBlockWrites(s *syntax.Stmt, f flags) {
+	if in := stdinOf(s, f.piped); len(in.writes) > 0 {
+		a.add(Invocation{Tool: BlockTool}, nil, stdin{writes: in.writes})
 	}
 }
 
@@ -339,8 +353,7 @@ func stdinOf(s *syntax.Stmt, piped bool) stdin {
 		switch r.Op {
 		case syntax.Hdoc, syntax.DashHdoc:
 			in.hasHeredoc = true
-			arg := wordArg(r.Hdoc)
-			in.heredoc, in.heredocLiteral = arg.Value, arg.Literal
+			in.heredoc, in.heredocLiteral = heredocText(r.Hdoc)
 		case syntax.WordHdoc:
 			in.hasHeredoc = true
 			arg := wordArg(r.Word)
@@ -349,12 +362,30 @@ func stdinOf(s *syntax.Stmt, piped bool) stdin {
 			arg := wordArg(r.Word)
 			in.file = &arg
 		case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrClob:
-			if arg := wordArg(r.Word); arg.Literal {
+			if arg := wordArg(r.Word).program(); arg.Literal {
 				in.writes = append(in.writes, arg.Value)
 			}
 		}
 	}
 	return in
+}
+
+// heredocText reads a here-document body, whose text is never globbed, so print([1])
+// is plain. literal is false when it has expansions, and the text then holds the
+// parts that are known.
+func heredocText(w *syntax.Word) (text string, literal bool) {
+	var b strings.Builder
+	literal = true
+	if w != nil {
+		for _, part := range w.Parts {
+			if lit, ok := part.(*syntax.Lit); ok {
+				b.WriteString(lit.Value)
+			} else {
+				literal = false
+			}
+		}
+	}
+	return b.String(), literal
 }
 
 // assignArg reads an assignment. An array keeps its words joined, so that
@@ -378,6 +409,9 @@ func assignArg(as *syntax.Assign) Arg {
 func wordArg(w *syntax.Word) Arg {
 	if w == nil {
 		return Arg{Literal: true}
+	}
+	if path, ok := homePath(w); ok {
+		return Arg{Value: path, Home: true}
 	}
 	var b strings.Builder
 	for _, part := range w.Parts {
@@ -408,6 +442,36 @@ func wordArg(w *syntax.Word) Arg {
 		}
 	}
 	return Arg{Value: b.String(), Literal: true}
+}
+
+// homePath recognises "$HOME/x" and ${HOME}/x, the spellings of ~/x that need a
+// variable, so that a script reached that way is read like any other.
+func homePath(w *syntax.Word) (string, bool) {
+	var parts []syntax.WordPart
+	for _, part := range w.Parts {
+		if q, ok := part.(*syntax.DblQuoted); ok {
+			parts = append(parts, q.Parts...)
+		} else {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) < 2 {
+		return "", false
+	}
+	p, ok := parts[0].(*syntax.ParamExp)
+	if !ok || p.Param == nil || p.Param.Value != "HOME" || p.Exp != nil || p.Slice != nil || p.Repl != nil || p.Index != nil || p.Length || p.Excl {
+		return "", false
+	}
+	var b strings.Builder
+	for _, part := range parts[1:] {
+		lit, ok := part.(*syntax.Lit)
+		if !ok || expands(lit.Value) {
+			return "", false
+		}
+		b.WriteString(lit.Value)
+	}
+	rest, ok := strings.CutPrefix(b.String(), "/")
+	return "~/" + rest, ok
 }
 
 // braceList matches what bash expands: {a,b} and {1..3}. It leaves {} and {x} alone,

@@ -162,3 +162,90 @@ func TestMakeSurvivesCycles(t *testing.T) {
 		t.Error("unexpected mention")
 	}
 }
+
+func TestMentionSkipsLinesThatOnlyPrintOrDefine(t *testing.T) {
+	for _, text := range []string{`echo "usage: terraform destroy"`, `@echo terraform destroy`, `printf 'kubectl delete\n'`, `alias kd='kubectl delete'`} {
+		if m := Mention(text); m != "" {
+			t.Errorf("%q: %q", text, m)
+		}
+	}
+	for _, text := range []string{`echo x | terraform destroy`, `echo "$(terraform destroy)"`, `echo 'terraform destroy' > y.sh`, `echo x; terraform destroy`} {
+		if Mention(text) == "" {
+			t.Errorf("%q: missed", text)
+		}
+	}
+}
+
+func TestMentionReportsTheCommandNotWhatPrecedesIt(t *testing.T) {
+	cases := map[string]string{"run k delete pod": "k delete", `"tf destroy"`: "tf destroy", "tf destroy": "tf destroy"}
+	for text, want := range cases {
+		if got := Mention(text); got != want {
+			t.Errorf("%q: got %q", text, got)
+		}
+	}
+}
+
+func TestMakeVariablesAndRules(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name, text, target string
+		hit                bool
+	}{
+		{"weak assignment keeps the first", "A = terraform\nA ?= echo\nx:\n\t$A destroy\n", "x", true},
+		{"appended value", "A = terraform\nA += destroy\nx:\n\t$(A)\n", "x", true},
+		{"braces", "A = terraform\nx:\n\t${A} destroy\n", "x", true},
+		{"a cycle ends", "A = $(B)\nB = $(A)\nx:\n\t$(A) destroy\n", "x", false},
+		{"doubling stops at the limit", "A = $(A)$(A)x\nx:\n\t$(A)\n", "x", false},
+		{"target variable with spaces", "x: A = terraform\nx:\n\t$(A) destroy\n", "x", true},
+		{"target variable stays with its target", "x: A = terraform\ny:\n\t$(A) destroy\n", "y", false},
+		{"define with an equals sign", "define A =\nterraform destroy\nendef\nx:\n\t$(A)\n", "x", true},
+		{"unterminated define defines nothing", "define A\nterraform destroy\nx:\n\t$(A)\n", "x", true},
+		{"pattern with a suffix", "%.tf:\n\tterraform $*\n", "destroy.tf", true},
+		{"pattern prerequisite", "go-%: run-%\nrun-%:\n\tterraform $*\n", "go-destroy", true},
+		{"automatic in a prerequisite", "x: $@-y\nx-y:\n\tterraform destroy\n", "x", true},
+		{"recipe ended by other text", "x:\n\techo a\nnot a rule\n\tterraform destroy\n", "x", false},
+	}
+	for _, c := range cases {
+		write(t, dir, "Makefile", c.text)
+		if got := Make(dir, "", []string{c.target}, nil, nil) != ""; got != c.hit {
+			t.Errorf("%s: hit=%v", c.name, got)
+		}
+	}
+}
+
+func TestMakeEnvironmentAndCommandLine(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "Makefile", "A := echo\nx:\n\t$(A) destroy\n")
+	if Make(dir, "", []string{"x"}, map[string]string{"A": "terraform"}, nil) != "" {
+		t.Error("a plain assignment replaces the environment")
+	}
+	if Make(dir, "", []string{"x"}, nil, map[string]string{"A": "terraform"}) == "" {
+		t.Error("the command line outranks the file")
+	}
+	write(t, dir, "Makefile", "A ?= echo\nx:\n\t$(A) destroy\n")
+	if Make(dir, "", []string{"x"}, map[string]string{"A": "terraform"}, nil) == "" {
+		t.Error("?= keeps the environment")
+	}
+}
+
+func TestMakeReadsIncludes(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "one.mk", "include two.mk\nA = terraform\n")
+	write(t, dir, "two.mk", "nuke:\n\t$(A) destroy\nlint:\n\tgo vet\n")
+	for text, want := range map[string]bool{
+		"include one.mk\nall:\n\tgo test\n":       true,
+		"-include one.mk absent.mk\nall:\n\tls\n": true,
+		"sinclude one.mk\nall:\n\tls\n":           true,
+		"include $(F)\nall:\n\tls\n":              false,
+		"include one.mk one.mk\nall:\n\tls\n":     true,
+	} {
+		write(t, dir, "Makefile", text)
+		if got := Make(dir, "", []string{"nuke"}, nil, nil) != ""; got != want {
+			t.Errorf("%q: hit=%v", text, got)
+		}
+	}
+	write(t, dir, "Makefile", "include one.mk\nall:\n\tls\n")
+	if m := Make(dir, "", []string{"lint"}, nil, nil); m != "" {
+		t.Errorf("a target found in an include needs no whole-file search: %q", m)
+	}
+}

@@ -47,7 +47,7 @@ type Deps struct {
 }
 
 var readOnly = map[string]bool{
-	"console": true, "fmt": true, "get": true, "graph": true, "init": true, "login": true,
+	"console": true, "fmt": true, "get": true, "graph": true, "help": true, "init": true, "login": true,
 	"logout": true, "metadata": true, "modules": true, "output": true, "plan": true,
 	"providers": true, "show": true, "validate": true, "version": true,
 }

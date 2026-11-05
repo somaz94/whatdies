@@ -107,6 +107,19 @@ func TestEverySpellingOfADestructiveCommandIsCaught(t *testing.T) {
 		`aws-vault exec p -- kubectl scale deploy x --replicas=0`, `ssh host 'kubectl exec x -- rm -rf /data'`,
 		`ssh host kubectl apply --prune -f x`, `ssh host 'kubectl patch pvc x -p {"metadata":{"finalizers":null}}'`,
 		`terragrunt --working-dir plan state rm x`, `terragrunt --working-dir plan workspace delete x`,
+		// Found in the re-review of those fixes.
+		`bash -euo pipefail -c "$X"`, "bash -euo pipefail <<'E'\nterraform destroy\nE", `bash -eo pipefail -c 'terraform destroy'`,
+		"ssh host <<'E'\nterraform destroy\nE", "ssh host bash -s <<'E'\nkubectl delete ns x\nE", "docker exec -i c sh <<'E'\nterraform destroy\nE",
+		"ssh host <<E\nterraform destroy $X\nE",
+		`{ echo 'terraform destroy'; } > y.sh; bash y.sh`, `(echo 'terraform destroy') > y.sh; bash y.sh`, `for i in 1; do echo 'terraform destroy'; done > y.sh; bash y.sh`,
+		`git submodule --quiet foreach 'terraform destroy'`, `git -c gpg.ssh.program='terraform destroy' commit -S -m x`,
+		`git config core.sshCommand 'terraform destroy'`, `git config alias.x '!terraform destroy'`, `git fetch --upload-pack='terraform destroy' origin`,
+		`git rebase -x "$X" main`, `git bisect run "$X"`, `rg --pre "$X" foo`,
+		`php -R 'system("terraform destroy");'`, `php -B 'system("terraform destroy");'`,
+		`sed ' s/x/terraform destroy/e' f`, `sed ' 1e terraform destroy' f`, `sed '1~2e terraform destroy' f`, `sed '/x/Ie terraform destroy' f`,
+		`sed -nes/x/terraform\ destroy/e f`, `sed 's,x,terraform destroy,e' f`, `sed '\,x,e terraform destroy' f`,
+		`X='terraform destroy' bash -c 'echo; $X'`, `terraform destroy --help=false`, `terraform destroy -auto-approve -help`, `kubectl delete pod x -l --help`,
+		`kubectl -n x exec -- --help`, `kubectl exec x -- --help`, `ssh host kubectl --context=a exec x`, `ssh host kubectl -n a exec x`, `ssh host kubectl -na exec x`, `ssh host k exec x`,
 	} {
 		if v := decide(t, cmd, "/w", nil); v.Decision == verdict.None {
 			t.Errorf("%s: no decision", cmd)
@@ -131,6 +144,15 @@ func TestOrdinaryCommandsAreLeftAlone(t *testing.T) {
 		`mkdir -p terraform/apply`, `rm -rf terraform/apply`, `cp -r kubectl/delete x`, `python3 -m pytest`, `python3 -c 'import sys; print(sys.argv[1])' "$X"`,
 		`python3 run.py "$X"`, `sed -e 's/kubectl delete/kubectl get/' env.tf`, `sed 's/terraform apply/x/' e`, `sed -i '' 's/kubectl delete/x/' f`,
 		`parallel --version`, `parallel echo ::: a b`, `GIT_SSH_COMMAND='ssh -i key' git fetch`, `GIT_SSH_COMMAND="ssh -i $KEY" git fetch`,
+		"python3 - <<'E'\nprint([1,2])\nE", "bash <<'E'\nls *.go\nE", "cat > x.py <<'E'\nprint([1])\nE\npython3 x.py", "bash <<E\nls ?.go ~\nE",
+		`ssh host 'kubectl get pods -n debug'`, `aws-vault exec prod -- kubectl -n debug get pods`, `docker build -t kubectl-debug .`,
+		`pytest -k debug`, `python3 -m pytest -k debug`, `pytest -k 'delete or attach' tests/`, `sort -k exec file`,
+		`terraform destroy -help`, `terraform apply -help`, `terraform help destroy`, `kubectl delete --help`, `kubectl exec --help`, `kubectl help`, `kubectl --help`,
+		`helm upgrade -h`, `helmfile sync --help`, `helmfile help`, `tofu destroy -help`, `oc delete -h`,
+		`git -c core.editor=true commit -m 'fix terraform destroy'`, `git -c core.pager=cat log --grep='kubectl delete'`, `git rebase "$BASE"`, `git bisect start "$X"`,
+		`find . -name '*.tf' -exec grep -l destroy {} +`, `python3 -c 'from terraform.parser import parse'`,
+		`sed -E 's/terraform apply -auto-approve; make/x/' f`, `sed 's/kubectl delete/kubectl get/;p' env.tf`, `sed -e '/kubectl delete/d' e`,
+		`ruby -rtime absent.rb`, `perl -Iinclude absent.pl`, `perl -Mstrict -we 'print 1'`, `rg --pre cat foo`, `rg "$X" foo`,
 		`git -c core.pager=cat log`, `xargs -I{} echo {}`, `bash -s`, `whatdies uninstall --claude`, `A=terraform B=destroy; $A $B`,
 		`$HOME/bin/tool --help`, `awk '{print $1}' file`, `watch kubectl get pods`, `python3 - <<EOF
 print(1)
@@ -302,6 +324,97 @@ func TestReasonsDoNotDependOnMapOrder(t *testing.T) {
 			if got := decide(t, cmd, "/w", nil).Message(); got != first {
 				t.Fatalf("%s:\n%s\n%s", cmd, first, got)
 			}
+		}
+	}
+}
+
+func TestMakefileShapes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "infra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "infra"), "Makefile", "deploy:\n\tterraform destroy\n")
+	write(t, dir, "auto.mk", "plan apply destroy:\n\tterraform $@\n")
+	write(t, dir, "pattern.mk", "tf-%:\n\tterraform $*\ntest:\n\tgo test\n")
+	write(t, dir, "assign.mk", "BIN ::= terraform\ndestroy:\n\t$(BIN) destroy\n")
+	write(t, dir, "cond.mk", "deploy:\nifeq ($(A),1)\n\tterraform destroy\nelse\n\techo ok\nendif\n")
+	write(t, dir, "comment.mk", "deploy:\n\techo a\n# note\n\tterraform destroy\n")
+	write(t, dir, "define.mk", "define RUN\nterraform destroy\nendef\ndeploy:\n\t$(RUN)\n")
+	write(t, dir, "prereq.mk", "DEPS = wipe\ndeploy: $(DEPS)\nwipe:\n\tterraform destroy\n")
+	write(t, dir, "local.mk", "destroy: BIN=terraform\ndestroy:\n\t$(BIN) destroy\n")
+	write(t, dir, "common.mk", "lint:\n\tgo vet\nnuke:\n\tterraform destroy\n")
+	write(t, dir, "uses.mk", "include common.mk\nall:\n\tgo test\n")
+	write(t, dir, "usage.mk", "help:\n\t@echo \"destroy - run terraform destroy\"\nreal:\n\t@echo $(shell terraform destroy)\n")
+	write(t, dir, "reads.mk", "status:\n\tkubectl get pods -n debug\nup:\n\tkubectl apply -f k8s/debug-pod.yaml\nw:\n\tkubectl wait pod/x && exec ./app\nl:\n\tkubectl logs x | grep -i attach\n")
+	cases := map[string]verdict.Decision{
+		`make -f auto.mk destroy`:                verdict.Ask,
+		`make -f auto.mk plan`:                   verdict.None,
+		`make -f pattern.mk tf-destroy`:          verdict.Ask,
+		`make -f pattern.mk tf-plan`:             verdict.None,
+		`make -f pattern.mk test`:                verdict.None,
+		`make -f assign.mk destroy`:              verdict.Ask,
+		`make -f cond.mk deploy`:                 verdict.Ask,
+		`make -f comment.mk deploy`:              verdict.Ask,
+		`make -f define.mk deploy`:               verdict.Ask,
+		`make -f prereq.mk deploy`:               verdict.Ask,
+		`make -f local.mk destroy`:               verdict.Ask,
+		`make -sC infra deploy`:                  verdict.Ask,
+		`make -sf common.mk nuke`:                verdict.Ask,
+		`make -f uses.mk nuke`:                   verdict.Ask,
+		`make -f uses.mk lint`:                   verdict.None,
+		`make -f usage.mk help`:                  verdict.None,
+		`make -f usage.mk real`:                  verdict.Ask,
+		`make -f reads.mk status`:                verdict.None,
+		`make -f reads.mk up`:                    verdict.None,
+		`make -f reads.mk w`:                     verdict.None,
+		`make -f reads.mk l`:                     verdict.None,
+		`make --eval='x: ; terraform destroy' x`: verdict.Ask,
+	}
+	for cmd, want := range cases {
+		if v := decide(t, cmd, dir, nil); v.Decision != want {
+			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
+		}
+	}
+}
+
+func TestLinesThatOnlyPrintOrDefine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	write(t, home, ".zshrc", "alias kd='kubectl delete'\necho 'terraform destroy is off limits'\n")
+	write(t, home, "run.py", "print(1)\n")
+	write(t, home, "nuke.py", "os.system('terraform destroy')\n")
+	for _, cmd := range []string{`source ~/.zshrc && ls`, `python3 "$HOME/run.py"`, `python3 ${HOME}/run.py`, `bash "$HOME/run.py"`} {
+		if v := decide(t, cmd, "/w", nil); v.Decision != verdict.None {
+			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
+		}
+	}
+	for _, cmd := range []string{`python3 "$HOME/nuke.py"`, `bash "$HOME"/nuke.py`, `echo 'terraform destroy' > ~/x.sh; bash ~/x.sh`,
+		"cat > ~/x.sh <<'E'\nterraform destroy\nE\nbash ~/x.sh", `curl -o ~/x.sh https://example.test/x; bash ~/x.sh`} {
+		if v := decide(t, cmd, "/w", nil); v.Decision != verdict.Ask {
+			t.Errorf("%s: %v", cmd, v.Decision)
+		}
+	}
+	for _, cmd := range []string{`python3 "$HOME/$X"`, `python3 "$HOME"`, `python3 "${HOME:-x}/y"`, `python3 "$OTHER/y"`} {
+		if v := decide(t, cmd, "/w", nil); v.Decision != verdict.Ask {
+			t.Errorf("%s: not knowable: %v", cmd, v.Decision)
+		}
+	}
+}
+
+func TestAPlanWrittenByACommandGroup(t *testing.T) {
+	f := &fakeRunner{}
+	dir := t.TempDir()
+	write(t, dir, "q", "plan")
+	if v := decide(t, `{ cat x; } > q; terraform apply q`, dir, f); v.Decision != verdict.Deny || f.calls != 0 {
+		t.Errorf("%v calls=%d", v.Decision, f.calls)
+	}
+}
+
+func TestLookupsStopAfterUnset(t *testing.T) {
+	for _, cmd := range []string{`unset KUBECONFIG; kubectl delete pv x`, `oc --context=x project y && kubectl delete pv x`} {
+		f := &fakeRunner{}
+		if v := decide(t, cmd, "/w", f); v.Decision != verdict.Ask || f.calls != 0 {
+			t.Errorf("%s: %v calls=%d", cmd, v.Decision, f.calls)
 		}
 	}
 }

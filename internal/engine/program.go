@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,10 @@ func judgeMake(inv shell.Invocation) verdict.Verdict {
 			return "", false
 		}
 		v := a.Value
+		// A cluster such as -sC ends in the flag that takes the next word.
+		if m := makeCluster.FindStringSubmatch(v); m != nil {
+			v = "-" + m[1]
+		}
 		switch {
 		case v == "-C" || v == "--directory":
 			if value, ok := next(); ok {
@@ -77,6 +82,8 @@ func judgeMake(inv shell.Invocation) verdict.Verdict {
 	}
 	return verdict.Verdict{}
 }
+
+var makeCluster = regexp.MustCompile(`^-[a-zA-Z]+([Cf])$`)
 
 var makeValueFlags = map[string]bool{
 	"-I": true, "--include-dir": true, "-o": true, "--old-file": true, "--assume-old": true,
