@@ -3,6 +3,7 @@ package terraform
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/somaz94/whatdies/internal/verdict"
@@ -87,70 +88,116 @@ func classify(actions []string) effect {
 	return harmless
 }
 
+// planFacts is what a verdict needs from a plan, however the plan was read.
+type planFacts struct {
+	Errored      bool
+	NotApplyable bool
+	Partial      bool
+	Changes      []plannedChange
+	// ProviderActions and Deferred count what the change list does not describe.
+	ProviderActions int
+	Deferred        int
+	Provisioners    bool
+}
+
+type plannedChange struct {
+	Address string
+	Type    string
+	Data    bool
+	Deposed bool
+	Actions []string
+}
+
+// changesAnything is true when applying it does something, which is when a
+// provisioner in the configuration can run.
+func (c plannedChange) changesAnything() bool {
+	return classify(c.Actions) != harmless || slices.Contains(c.Actions, "create") || slices.Contains(c.Actions, "update")
+}
+
 // JudgePlan decides from the output of terraform show -json.
 func JudgePlan(raw []byte, stateful map[string]bool) verdict.Verdict {
+	facts, problem := factsFromJSON(raw)
+	if problem != "" {
+		return verdict.AskBecause(problem)
+	}
+	return judgeFacts(facts, stateful)
+}
+
+func factsFromJSON(raw []byte) (planFacts, string) {
 	var doc planDoc
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return verdict.AskBecause(fmt.Sprintf("could not decode the plan: %v", err))
+		return planFacts{}, fmt.Sprintf("could not decode the plan: %v", err)
 	}
 	if major, _, _ := strings.Cut(doc.FormatVersion, "."); major != "1" {
-		return verdict.AskBecause(fmt.Sprintf("plan format %q is not one whatdies knows", doc.FormatVersion))
+		return planFacts{}, fmt.Sprintf("plan format %q is not one whatdies knows", doc.FormatVersion)
 	}
-	if doc.Errored {
+	facts := planFacts{
+		Errored:         doc.Errored,
+		NotApplyable:    doc.Applyable != nil && !*doc.Applyable,
+		Partial:         doc.Complete != nil && !*doc.Complete,
+		ProviderActions: len(doc.ActionInvocations),
+		Deferred:        len(doc.DeferredChanges) + len(doc.DeferredActions),
+		Provisioners:    hasProvisioner(doc.Configuration.RootModule),
+	}
+	for _, rc := range doc.ResourceChanges {
+		facts.Changes = append(facts.Changes, plannedChange{
+			Address: rc.Address,
+			Type:    rc.Type,
+			Data:    rc.Mode == "data",
+			Deposed: rc.Deposed != "",
+			Actions: rc.Change.Actions,
+		})
+	}
+	return facts, ""
+}
+
+func judgeFacts(f planFacts, stateful map[string]bool) verdict.Verdict {
+	if f.Errored {
 		return verdict.AskBecause("the plan is marked as errored, so its change list may be partial")
 	}
-	if doc.Applyable != nil && !*doc.Applyable {
+	if f.NotApplyable {
 		return verdict.Verdict{}
 	}
 
 	var fatal, other, vague []string
 	changing := false
-	for _, rc := range doc.ResourceChanges {
-		eff := classify(rc.Change.Actions)
-		if eff != harmless {
-			changing = true
-		} else {
-			for _, a := range rc.Change.Actions {
-				if a == "create" || a == "update" {
-					changing = true
-				}
-			}
-		}
-		if rc.Mode == "data" {
+	for _, c := range f.Changes {
+		changing = changing || c.changesAnything()
+		if c.Data {
 			continue
 		}
 		verb := "destroys"
-		switch eff {
+		switch classify(c.Actions) {
 		case harmless:
 			continue
 		case unclear:
-			vague = append(vague, fmt.Sprintf("%s has actions %v, which whatdies cannot rule out as destructive", rc.Address, rc.Change.Actions))
+			vague = append(vague, fmt.Sprintf("%s has actions %v, which whatdies cannot rule out as destructive", c.Address, c.Actions))
 			continue
 		case replaces:
 			verb = "replaces"
 		}
-		line := fmt.Sprintf("%s %s", verb, rc.Address)
-		if rc.Deposed != "" {
+		line := fmt.Sprintf("%s %s", verb, c.Address)
+		if c.Deposed {
 			line += " (deposed object)"
 		}
-		if stateful[rc.Type] {
-			fatal = append(fatal, line+" ("+rc.Type+" holds data)")
+		if stateful[c.Type] {
+			fatal = append(fatal, line+" ("+c.Type+" holds data)")
 		} else {
 			other = append(other, line)
 		}
 	}
 
 	var reasons []string
-	if doc.Complete != nil && !*doc.Complete {
+	if f.Partial {
 		reasons = append(reasons, "the plan is partial: more changes follow after this one is applied")
 	}
-	if len(doc.ActionInvocations) > 0 {
-		reasons = append(reasons, fmt.Sprintf("the plan runs %d provider action(s), whose effects it does not show", len(doc.ActionInvocations)))
+	if f.ProviderActions > 0 {
+		reasons = append(reasons, fmt.Sprintf("the plan runs %d provider action(s), whose effects it does not show", f.ProviderActions))
 	}
-	if n := len(doc.DeferredChanges) + len(doc.DeferredActions); n > 0 {
-		reasons = append(reasons, fmt.Sprintf("the plan defers %d change(s), which it does not describe", n))
+	if f.Deferred > 0 {
+		reasons = append(reasons, fmt.Sprintf("the plan defers %d change(s), which it does not describe", f.Deferred))
 	}
-	if changing && hasProvisioner(doc.Configuration.RootModule) {
+	if changing && f.Provisioners {
 		reasons = append(reasons, "the configuration has provisioners, which run commands the plan does not show")
 	}
 	reasons = append(reasons, vague...)

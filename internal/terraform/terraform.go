@@ -41,8 +41,9 @@ func resolve(dir, path string) string {
 // Deps are the outside inputs of a verdict.
 type Deps struct {
 	Runner runner.Runner
-	// Stateful is the set of resource types whose deletion loses data.
-	Stateful map[string]bool
+	// Stateful returns the set of resource types whose deletion loses data. It is a
+	// function so that the many terraform commands that read no plan do not parse it.
+	Stateful func() (map[string]bool, error)
 }
 
 var readOnly = map[string]bool{
@@ -244,7 +245,7 @@ func writesPlan(plan string, earlier []shell.Invocation) string {
 				return e.Tool + " plan"
 			}
 		}
-		if (shell.Invocation{Writes: e.Writes}).NamesFile(plan) {
+		if e.WritesFile(plan) {
 			return e.Tool
 		}
 		if planReaders[e.Tool] || sub == "show" {
@@ -280,5 +281,9 @@ func readPlan(ctx context.Context, dir, plan string, d Deps) verdict.Verdict {
 	if err != nil {
 		return verdict.AskBecause(fmt.Sprintf("could not read plan %q: %v", plan, err))
 	}
-	return JudgePlan(out, d.Stateful)
+	stateful, err := d.Stateful()
+	if err != nil {
+		return verdict.AskBecause(err.Error())
+	}
+	return JudgePlan(out, stateful)
 }

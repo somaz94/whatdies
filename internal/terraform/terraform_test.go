@@ -42,7 +42,7 @@ func eval(t *testing.T, cmd, cwd string, f *fakeRunner) verdict.Verdict {
 	var out verdict.Verdict
 	for i, inv := range a.Invocations {
 		if inv.Tool == "terraform" {
-			out = verdict.Join(out, Evaluate(context.Background(), inv, a.Invocations[:i], Deps{Runner: f, Stateful: stateful}))
+			out = verdict.Join(out, Evaluate(context.Background(), inv, a.Invocations[:i], Deps{Runner: f, Stateful: func() (map[string]bool, error) { return stateful, nil }}))
 		}
 	}
 	return out

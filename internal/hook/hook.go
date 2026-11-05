@@ -21,10 +21,9 @@ const maxInput = 8 << 20
 var watched = map[string]bool{"Bash": true, "Monitor": true, "PowerShell": true}
 
 type input struct {
-	HookEventName string `json:"hook_event_name"`
-	ToolName      string `json:"tool_name"`
-	Cwd           string `json:"cwd"`
-	ToolInput     struct {
+	ToolName  string `json:"tool_name"`
+	Cwd       string `json:"cwd"`
+	ToolInput struct {
 		Command string `json:"command"`
 	} `json:"tool_input"`
 }
@@ -49,21 +48,35 @@ func Run(ctx context.Context, stdin io.Reader, stdout io.Writer, eval Evaluator,
 }
 
 func decide(ctx context.Context, stdin io.Reader, eval Evaluator, deadline time.Duration) verdict.Verdict {
-	data, err := io.ReadAll(io.LimitReader(stdin, maxInput+1))
-	if err != nil {
-		return verdict.AskBecause(fmt.Sprintf("could not read the hook event: %v", err))
-	}
-	if len(data) > maxInput {
-		return verdict.AskBecause("the command is too large to read")
-	}
-	var in input
-	if err := json.Unmarshal(data, &in); err != nil {
-		return verdict.AskBecause(fmt.Sprintf("could not decode the hook event: %v", err))
+	in, problem := readEvent(stdin)
+	if problem != "" {
+		return verdict.AskBecause(problem)
 	}
 	if !watched[in.ToolName] || in.ToolInput.Command == "" {
 		return verdict.Verdict{}
 	}
+	return guarded(ctx, deadline, func(ctx context.Context) verdict.Verdict {
+		return eval(ctx, in.ToolInput.Command, in.Cwd)
+	})
+}
 
+func readEvent(stdin io.Reader) (input, string) {
+	var in input
+	data, err := io.ReadAll(io.LimitReader(stdin, maxInput+1))
+	if err != nil {
+		return in, fmt.Sprintf("could not read the hook event: %v", err)
+	}
+	if len(data) > maxInput {
+		return in, "the command is too large to read"
+	}
+	if err := json.Unmarshal(data, &in); err != nil {
+		return in, fmt.Sprintf("could not decode the hook event: %v", err)
+	}
+	return in, ""
+}
+
+// guarded turns a panic or a missed deadline into ask, whichever agent asked.
+func guarded(ctx context.Context, deadline time.Duration, check func(context.Context) verdict.Verdict) verdict.Verdict {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	done := make(chan verdict.Verdict, 1)
@@ -73,7 +86,7 @@ func decide(ctx context.Context, stdin io.Reader, eval Evaluator, deadline time.
 				done <- verdict.AskBecause(fmt.Sprintf("internal error while checking this command: %v", r))
 			}
 		}()
-		done <- eval(ctx, in.ToolInput.Command, in.Cwd)
+		done <- check(ctx)
 	}()
 	select {
 	case v := <-done:

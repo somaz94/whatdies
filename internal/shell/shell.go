@@ -59,19 +59,20 @@ type Invocation struct {
 	Writes []string
 }
 
-// NamesFile reports whether a literal argument or redirect names the file,
-// including in the option=value form.
-func (i Invocation) NamesFile(path string) bool {
+// WritesFile reports whether a redirect writes a file of that name. It compares
+// base names, which can only make a caller more careful.
+func (i Invocation) WritesFile(path string) bool {
 	base := filepath.Base(path)
 	for _, w := range i.Writes {
 		if filepath.Base(w) == base {
 			return true
 		}
 	}
-	return i.ArgNamesFile(path)
+	return false
 }
 
-// ArgNamesFile is NamesFile without the redirects.
+// ArgNamesFile reports whether a literal argument names the file, including in
+// the option=value and -ovalue forms.
 func (i Invocation) ArgNamesFile(path string) bool {
 	base := filepath.Base(path)
 	for _, v := range i.Literals() {
@@ -187,7 +188,9 @@ func (a *analyzer) stmt(s *syntax.Stmt, f flags) {
 			a.stmt(c.X, f)
 			a.conditional(func() { a.stmt(c.Y, f) })
 		default:
-			a.andChain(c, f)
+			leaves := andLeaves(s)
+			a.stmt(leaves[0], f)
+			a.conditional(func() { a.stmts(leaves[1:], f) })
 		}
 	case *syntax.Block:
 		a.stmts(c.Stmts, f)
@@ -238,37 +241,14 @@ func (a *analyzer) stmt(s *syntax.Stmt, f flags) {
 	}
 }
 
-// andChain keeps the directory certain inside `a && b && c`, where each step only
-// runs if the last one worked. Afterwards it is certain only if the first step
-// made the change, because any later step may not have run.
-func (a *analyzer) andChain(c *syntax.BinaryCmd, f flags) {
-	var leaves []*syntax.Stmt
-	var cur syntax.Command = c
-	for {
-		b, ok := cur.(*syntax.BinaryCmd)
-		if !ok || b.Op != syntax.AndStmt {
-			break
-		}
-		leaves = append([]*syntax.Stmt{b.Y}, leaves...)
-		if b.X == nil {
-			break
-		}
-		if _, nested := b.X.Cmd.(*syntax.BinaryCmd); !nested {
-			leaves = append([]*syntax.Stmt{b.X}, leaves...)
-			break
-		}
-		cur = b.X.Cmd
-		if inner := cur.(*syntax.BinaryCmd); inner.Op != syntax.AndStmt {
-			leaves = append([]*syntax.Stmt{b.X}, leaves...)
-			break
-		}
+// andLeaves flattens `a && b && c`, which the parser nests to the left. The steps
+// after the first must run under one conditional: each only runs if the last one
+// worked, so a cd among them is certain to the steps after it but not afterwards.
+func andLeaves(s *syntax.Stmt) []*syntax.Stmt {
+	if b, ok := s.Cmd.(*syntax.BinaryCmd); ok && b.Op == syntax.AndStmt {
+		return append(andLeaves(b.X), b.Y)
 	}
-	a.stmt(leaves[0], f)
-	a.conditional(func() {
-		for _, leaf := range leaves[1:] {
-			a.stmt(leaf, f)
-		}
-	})
+	return []*syntax.Stmt{s}
 }
 
 // conditional runs fn for steps that may not run: a directory change inside is
@@ -312,8 +292,6 @@ func (a *analyzer) substs(node syntax.Node, f flags) {
 
 func isNil(n syntax.Node) bool {
 	switch v := n.(type) {
-	case nil:
-		return true
 	case *syntax.Word:
 		return v == nil
 	case *syntax.Assign:
@@ -362,9 +340,6 @@ func stdinOf(s *syntax.Stmt, piped bool) stdin {
 		case syntax.Hdoc, syntax.DashHdoc:
 			in.hasHeredoc = true
 			arg := wordArg(r.Hdoc)
-			if r.Hdoc == nil {
-				arg = Arg{Literal: true}
-			}
 			in.heredoc, in.heredocLiteral = arg.Value, arg.Literal
 		case syntax.WordHdoc:
 			in.hasHeredoc = true
