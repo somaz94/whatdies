@@ -52,6 +52,12 @@ var targetFlags = []string{"--as", "--as-group", "--as-uid", "--certificate-auth
 	"--client-key", "--cluster", "--kubeconfig", "--password", "--server", "-s", "--tls-server-name", "--token",
 	"--user", "--username"}
 
+// ocQuiet are oc's own verbs that remove nothing.
+var ocQuiet = map[string]bool{
+	"login": true, "logout": true, "new-app": true, "new-project": true, "project": true,
+	"projects": true, "status": true, "whoami": true,
+}
+
 var quiet = map[string]bool{
 	"annotate": true, "api-resources": true, "api-versions": true, "auth": true, "autoscale": true,
 	"certificate": true, "cluster-info": true, "completion": true, "config": true, "cordon": true, "cp": true,
@@ -61,6 +67,7 @@ var quiet = map[string]bool{
 }
 
 type command struct {
+	tool       string
 	verb       string
 	positional []shell.Arg
 	flags      map[string]string
@@ -139,10 +146,11 @@ func parse(args []shell.Arg) (command, string) {
 // Evaluate judges one kubectl invocation.
 func Evaluate(ctx context.Context, inv shell.Invocation, d Deps) verdict.Verdict {
 	c, problem := parse(inv.Args)
+	c.tool = inv.Tool
 	if problem != "" {
-		return verdict.AskBecause("kubectl: " + problem)
+		return verdict.AskBecause(c.tool + ": " + problem)
 	}
-	if c.verb == "" || quiet[c.verb] {
+	if c.verb == "" || quiet[c.verb] || (c.tool == "oc" && ocQuiet[c.verb]) {
 		return verdict.Verdict{}
 	}
 	if dry := c.value("--dry-run"); dry == "client" || dry == "server" {
@@ -151,42 +159,42 @@ func Evaluate(ctx context.Context, inv shell.Invocation, d Deps) verdict.Verdict
 	switch c.verb {
 	case "apply":
 		if c.has("--prune") {
-			return verdict.AskBecause("kubectl apply --prune deletes objects missing from the input")
+			return verdict.AskBecause(c.tool + " apply --prune deletes objects missing from the input")
 		}
 		if c.has("--force") {
-			return verdict.AskBecause("kubectl apply --force deletes and recreates objects")
+			return verdict.AskBecause(c.tool + " apply --force deletes and recreates objects")
 		}
 		return verdict.Verdict{}
 	case "replace":
 		if c.has("--force") {
-			return verdict.AskBecause("kubectl replace --force deletes and recreates objects")
+			return verdict.AskBecause(c.tool + " replace --force deletes and recreates objects")
 		}
 		return verdict.Verdict{}
 	case "scale":
 		if v := c.value("--replicas"); v == "0" || c.computed {
-			return verdict.AskBecause("kubectl scale to zero stops every replica")
+			return verdict.AskBecause(c.tool + " scale to zero stops every replica")
 		}
 		return verdict.Verdict{}
 	case "patch":
 		if c.computed || c.has("--patch-file") || containsLiteral(inv, "finalizers") {
-			return verdict.AskBecause("kubectl patch may clear finalizers, which skips cleanup and can orphan data")
+			return verdict.AskBecause(c.tool + " patch may clear finalizers, which skips cleanup and can orphan data")
 		}
 		return verdict.Verdict{}
 	case "drain":
-		return verdict.AskBecause("kubectl drain evicts every pod on the node")
+		return verdict.AskBecause(c.tool + " drain evicts every pod on the node")
 	case "taint":
-		return verdict.AskBecause("kubectl taint can evict pods from the node")
+		return verdict.AskBecause(c.tool + " taint can evict pods from the node")
 	case "exec", "debug", "attach":
-		return verdict.AskBecause("kubectl " + c.verb + " runs commands inside the cluster")
+		return verdict.AskBecause(c.tool + " " + c.verb + " runs commands inside the cluster")
 	case "run":
 		if c.dashDash {
-			return verdict.AskBecause("kubectl run with a command runs it inside the cluster")
+			return verdict.AskBecause(c.tool + " run with a command runs it inside the cluster")
 		}
 		return verdict.Verdict{}
 	case "delete":
 		return evaluateDelete(ctx, inv, c, d)
 	}
-	return verdict.AskBecause(fmt.Sprintf("kubectl %s is not a verb whatdies knows", strconv.Quote(c.verb)))
+	return verdict.AskBecause(fmt.Sprintf("%s %s is not a verb whatdies knows", c.tool, strconv.Quote(c.verb)))
 }
 
 func containsLiteral(inv shell.Invocation, needle string) bool {
@@ -242,24 +250,24 @@ func evaluateDelete(ctx context.Context, inv shell.Invocation, c command, d Deps
 func staticDelete(c command) string {
 	switch {
 	case c.computed:
-		return "kubectl delete has an argument computed at run time, so its target is unknown"
+		return c.tool + " delete has an argument computed at run time, so its target is unknown"
 	case c.has("--raw"):
-		return "kubectl delete --raw sends a raw API request"
+		return c.tool + " delete --raw sends a raw API request"
 	case c.has("-f", "--filename"):
-		return "kubectl delete -f removes whatever the input names"
+		return c.tool + " delete -f removes whatever the input names"
 	case c.has("-k", "--kustomize"):
-		return "kubectl delete -k removes whatever the kustomization builds"
+		return c.tool + " delete -k removes whatever the kustomization builds"
 	case c.has("-l", "--selector", "--field-selector"):
-		return "kubectl delete with a selector removes every match"
+		return c.tool + " delete with a selector removes every match"
 	case c.has("--all", "-A", "--all-namespaces"):
-		return "kubectl delete --all removes every object of the type"
+		return c.tool + " delete --all removes every object of the type"
 	}
 	return ""
 }
 
 func parseTargets(c command) ([]target, string) {
 	if len(c.positional) == 0 {
-		return nil, "kubectl delete without a named target"
+		return nil, c.tool + " delete without a named target"
 	}
 	var out []target
 	var current *target
@@ -272,10 +280,10 @@ func parseTargets(c command) ([]target, string) {
 		}
 		if current == nil {
 			if strings.Contains(v, ",") {
-				return nil, "kubectl delete names several resource types at once: " + v
+				return nil, c.tool + " delete names several resource types at once: " + v
 			}
 			if v == "all" {
-				return nil, "kubectl delete all removes most resources in the namespace"
+				return nil, c.tool + " delete all removes most resources in the namespace"
 			}
 			out = append(out, target{kind: canonical(v)})
 			current = &out[len(out)-1]
@@ -286,17 +294,17 @@ func parseTargets(c command) ([]target, string) {
 	count := 0
 	for _, t := range out {
 		if len(t.names) == 0 {
-			return nil, "kubectl delete " + t.kind + " has no object name"
+			return nil, c.tool + " delete " + t.kind + " has no object name"
 		}
 		for _, name := range t.names {
 			if !validName.MatchString(name) {
-				return nil, fmt.Sprintf("kubectl delete names an object that is not a valid name: %q", name)
+				return nil, fmt.Sprintf("%s delete names an object that is not a valid name: %q", c.tool, name)
 			}
 		}
 		count += len(t.names)
 	}
 	if count > maxTargets {
-		return nil, fmt.Sprintf("kubectl delete names %d objects, too many to look up", count)
+		return nil, fmt.Sprintf("%s delete names %d objects, too many to look up", c.tool, count)
 	}
 	return out, ""
 }

@@ -475,6 +475,33 @@ func TestKubectlAndOCReachTheirJudges(t *testing.T) {
 	}
 }
 
+// An agent told `kubectl drain evicts...` about an oc command may go looking for a
+// kubectl it never called.
+func TestOCReasonsNameOC(t *testing.T) {
+	for _, cmd := range []string{
+		`oc drain n`, `oc delete --all pods`, `oc delete -f x`, `oc delete pv/--x=y`, `oc scale deploy x --replicas=0`,
+		`oc exec x -- ls`, `oc nonsense`, `oc $V`, `oc delete pod`, `oc delete all`, `oc delete a,b c`,
+	} {
+		v := decide(t, cmd, "/w", nil)
+		joined := strings.Join(v.Reasons, " ")
+		if v.Decision == verdict.None || strings.Contains(joined, "kubectl") || !strings.Contains(joined, "oc") {
+			t.Errorf("%s: %v %q", cmd, v.Decision, joined)
+		}
+	}
+	for _, cmd := range []string{`oc project x`, `oc status`, `oc whoami`, `oc login`, `oc new-project x`} {
+		if v := decide(t, cmd, "/w", nil); v.Decision != verdict.None {
+			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
+		}
+	}
+	// oc and kubectl share a kubeconfig, so these move kubectl's target as well.
+	for _, cmd := range []string{`oc project x && kubectl delete pv v`, `oc login u && kubectl delete pv v`} {
+		f := &fakeRunner{}
+		if v := decide(t, cmd, "/w", f); v.Decision != verdict.Ask || f.calls != 0 {
+			t.Errorf("%s: %v calls=%d", cmd, v.Decision, f.calls)
+		}
+	}
+}
+
 func TestDefaultUsesTheRealRunner(t *testing.T) {
 	if _, ok := Default().Runner.(runner.Exec); !ok {
 		t.Fatal("not the real runner")

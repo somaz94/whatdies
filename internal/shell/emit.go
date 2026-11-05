@@ -218,6 +218,9 @@ func (a *analyzer) noteTargetChange(name string, args []Arg) {
 	case "kubectx", "kubens", "kctx":
 		reason = name
 	case "kubectl", "oc":
+		if name == "oc" && (first(args) == "project" || first(args) == "login") {
+			reason = "oc " + first(args)
+		}
 		for _, s := range []string{"config use-context", "config use", "config set-context", "config set-cluster"} {
 			if has(s) {
 				reason = name + " " + s
@@ -243,6 +246,13 @@ func (a *analyzer) noteTargetChange(name string, args []Arg) {
 	if reason != "" {
 		a.targetChange = reason
 	}
+}
+
+func first(args []Arg) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0].Value
 }
 
 func (a *analyzer) unwrap(name string, w wrapper, args []Arg, inline map[string]Arg, in stdin, f flags) {

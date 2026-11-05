@@ -94,7 +94,7 @@ Ask with no lookup: `-f`, `-k`, selectors, `--all`, `--raw`, several types at on
 | `apply --prune`, `apply --force`, `replace --force`, `scale --replicas=0`, a `patch` that touches finalizers or reads a `--patch-file` | Ask |
 | A verb it does not know, such as a plugin | Ask |
 
-`oc` follows the same rules without lookups. Helm and helmfile are decided by verb: `uninstall`, `upgrade`, `rollback`, `helmfile sync` and the like are ask unless `--dry-run` is set.
+`oc` follows the same rules without lookups, and its own read-only verbs such as `status` and `whoami` are no decision. `oc project` and `oc login` stop later `kubectl` lookups, since they share a kubeconfig. Helm and helmfile are decided by verb: `uninstall`, `upgrade`, `rollback`, `helmfile sync` and the like are ask unless `--dry-run` is set.
 
 <br/>
 
