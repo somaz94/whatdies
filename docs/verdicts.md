@@ -1,0 +1,108 @@
+# Verdicts
+
+How whatdies reaches each decision. There are three outcomes, and the strictest one across all the steps of a command line wins:
+
+- **Deny**: the command does not run, and the agent is told what to do instead.
+- **Ask**: Claude Code prompts you. In a headless run (`claude -p`) an ask is refused, with the reason passed to the agent, and that held under `bypassPermissions` too.
+- **No decision**: your normal permission rules apply.
+
+<br/>
+
+## Reading the command
+
+The command is parsed as bash, not searched as text, so these are all the same `terraform destroy`:
+
+```bash
+\terraform destroy
+sudo env A=1 timeout 60 terraform destroy
+bash -c 'cd envs && terraform destroy'
+for x in 1; do terraform destroy; done
+echo $(terraform destroy)
+```
+
+`git commit -m "terraform destroy"` and `grep "kubectl delete" docs` are not, because nothing runs those words.
+
+| Shape | What happens |
+|---|---|
+| Wrappers such as `env`, `sudo`, `timeout`, `nohup`, `command` | Read through |
+| `bash -c`, `eval`, here-documents fed to a shell | The text is parsed as a command, up to a depth limit |
+| `xargs`, `parallel`, `find -exec` | The command is read, and its run-time arguments count as unknown |
+| An unknown wrapper, such as `aws-vault exec prod -- terraform destroy` or `ssh host "kubectl delete ns x"` | Ask, if its arguments contain an infrastructure tool and a destructive verb |
+| `./deploy.sh`, `bash deploy.sh`, `python3 run.py`, `python3 -c '...'` | The program text is searched one level deep. A hit is ask |
+| `echo '...' > x.sh && bash x.sh`, or a here-document written to a file and then run | The text in the command line is searched the same way, since the file is not on disk yet. Anything else that creates the script just before running it, such as `curl -o`, is ask |
+| `git rebase -x`, `git bisect run`, a `git -c alias.x='!...'` | The command git would run is searched. Other git commands are left alone, so a commit message can say anything |
+| `make deploy` | The target's recipe and prerequisites are searched. A hit is ask, and `make test` stays silent |
+| `eval "$X"`, `bash -c "$X"`, `curl ... \| bash`, `$BIN delete ...` | Ask, since the command is not knowable |
+| `k`, `tf`, `tg`, `kubecolor` | Treated as `kubectl`, `terraform`, `terragrunt` and `kubectl` |
+
+Steps earlier in the same line count. After a computed `cd`, a `cd` that may not have run (`false && cd x; ...`, or inside an `if`), a `kubectl config use-context`, a `terraform workspace select` or an `aws eks update-kubeconfig`, what could be looked up now would describe the wrong target, so the verdict is ask with no lookup.
+
+<br/>
+
+## Terraform
+
+Saving a plan is the only way to know what an apply does, so everything turns on it.
+
+| Command | Verdict |
+|---|---|
+| `plan`, `init`, `validate`, `fmt`, `show`, `output`, `state list` and other read-only commands | No decision |
+| `apply` or `destroy` with no saved plan, including `echo yes \| terraform apply` | Deny, with instructions |
+| `terraform plan -out=x && terraform apply x`, or any earlier step that may write the plan file | Deny. The hook runs before the line does, so it would read the previous plan. The agent is told to split the calls |
+| `apply <planfile>` | Decided from the plan, below |
+| `state rm`, `state mv`, `taint`, `import`, `force-unlock`, `workspace delete`, `init -migrate-state`, `init -force-copy`, `test` | Ask |
+| `apply` with an option whatdies does not know, or a computed argument | Ask |
+| `TF_CLI_ARGS*`, `TF_WORKSPACE` or `TF_DATA_DIR` set by the command itself | Ask. The same variables in your own environment are ignored, since they cannot change what a saved plan does |
+| `tofu`, `terragrunt` | Read-only commands pass, and anything else is ask. Their plans are not read yet |
+
+From the plan's `resource_changes`:
+
+| `change.actions` | Resource type in [`stateful.yaml`](../internal/registry/stateful.yaml) | Any other type |
+|---|---|---|
+| `delete`, or `delete` with `create` | Deny | Ask |
+| `forget`, or a value whatdies does not know | Ask | Ask |
+| `create`, `update`, `read`, `no-op` | No decision | No decision |
+
+Also ask: an errored plan, a partial plan (`complete: false`), provider actions, deferred changes, and provisioners when anything changes, since none of those are described by the change list. `resource_drift` and `output_changes` are ignored, because they describe the past and outputs.
+
+An in-place `update` is not treated as destructive, even one that sets `force_destroy = true` so that a later destroy loses data.
+
+<br/>
+
+## Kubernetes
+
+Only named objects are looked up, with `kubectl get`, and each call has a short timeout.
+
+| Target | Lookup | Verdict |
+|---|---|---|
+| Namespace | PVCs, StatefulSets, Deployments and Pods inside it, then the volumes behind the PVCs | Any volume with `reclaim=Delete` or `Recycle`: deny. Otherwise ask, with the contents listed |
+| PVC | The volume behind it | Same |
+| PV | Its reclaim policy | Same |
+| StatefulSet | `persistentVolumeClaimRetentionPolicy.whenDeleted` | `Delete`, and the claims' volumes would be deleted: deny. Otherwise ask, since claims normally outlive the set |
+| CRD | How many instances exist | Ask, with the count |
+| Anything else | None | Ask |
+
+Ask with no lookup: `-f`, `-k`, selectors, `--all`, `--raw`, several types at once, computed arguments, more names than it will look up, and any name that is not a valid object name. Names go to `kubectl get` as arguments, so `pv/--kubeconfig=x` must not reach it.
+
+| Other verbs | Verdict |
+|---|---|
+| `get`, `describe`, `logs`, `apply`, `create`, `rollout` and similar | No decision |
+| Anything with `--dry-run=client` or `--dry-run=server` | No decision |
+| `drain`, `taint`, `exec`, `debug`, `attach`, `run ... -- <command>` | Ask |
+| `apply --prune`, `apply --force`, `replace --force`, `scale --replicas=0`, a `patch` that touches finalizers or reads a `--patch-file` | Ask |
+| A verb it does not know, such as a plugin | Ask |
+
+`oc` follows the same rules without lookups. Helm and helmfile are decided by verb: `uninstall`, `upgrade`, `rollback`, `helmfile sync` and the like are ask unless `--dry-run` is set.
+
+<br/>
+
+## When a check fails
+
+Claude Code lets a command run when its hook times out, crashes or cannot start. whatdies closes each of those:
+
+| Failure | Handling |
+|---|---|
+| A lookup hangs | Each probe has a timeout, the whole check has a deadline shorter than the hook's, and the verdict is ask |
+| A lookup fails: no credentials, forbidden, unreachable | Ask, with the error |
+| A bug in whatdies | The panic is recovered, and the verdict is ask |
+| The process dies anyway, or the binary is gone | The installed command ends in `exit 2`, which blocks |
+| The hook itself times out | `onFailure: block` in the installed entry |

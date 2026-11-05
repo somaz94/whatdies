@@ -1,0 +1,39 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+
+# Dist
+dist/
+
+# Terraform (plans hold sensitive values in clear text)
+*.tfplan
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl

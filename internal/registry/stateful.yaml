@@ -1,0 +1,61 @@
+# Terraform resource types whose deletion loses data that recreating the
+# resource does not bring back. A type missing here still gets ask, not silence,
+# so this list decides between ask and deny and needs no exhaustive coverage.
+# Add a type by opening a pull request with a line here; no code changes.
+stateful:
+  # AWS
+  - aws_backup_vault
+  - aws_cloudwatch_log_group
+  - aws_db_instance
+  - aws_db_snapshot
+  - aws_docdb_cluster
+  - aws_dynamodb_table
+  - aws_ebs_snapshot
+  - aws_ebs_volume
+  - aws_ecr_repository
+  - aws_efs_file_system
+  - aws_elasticache_cluster
+  - aws_elasticache_replication_group
+  - aws_elasticsearch_domain
+  - aws_kinesis_stream
+  - aws_kms_key
+  - aws_msk_cluster
+  - aws_neptune_cluster
+  - aws_opensearch_domain
+  - aws_rds_cluster
+  - aws_redshift_cluster
+  - aws_route53_zone
+  - aws_s3_bucket
+  - aws_s3_object
+  - aws_secretsmanager_secret
+  - aws_sqs_queue
+  # Google Cloud
+  - google_bigquery_dataset
+  - google_bigquery_table
+  - google_compute_disk
+  - google_filestore_instance
+  - google_firestore_database
+  - google_kms_crypto_key
+  - google_redis_instance
+  - google_spanner_database
+  - google_spanner_instance
+  - google_sql_database
+  - google_sql_database_instance
+  - google_storage_bucket
+  # Azure
+  - azurerm_cosmosdb_account
+  - azurerm_key_vault
+  - azurerm_managed_disk
+  - azurerm_mssql_database
+  - azurerm_mssql_server
+  - azurerm_mysql_flexible_server
+  - azurerm_postgresql_flexible_server
+  - azurerm_redis_cache
+  - azurerm_storage_account
+  # Kubernetes provider
+  - kubernetes_namespace
+  - kubernetes_namespace_v1
+  - kubernetes_persistent_volume
+  - kubernetes_persistent_volume_claim
+  - kubernetes_persistent_volume_claim_v1
+  - kubernetes_persistent_volume_v1
