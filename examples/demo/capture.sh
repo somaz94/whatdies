@@ -8,6 +8,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 whatdies=${WHATDIES:-$here/../../bin/whatdies}
 out=$here/captured
 cluster="whatdies-demo"
+# The cleanup below deletes this name, so never adopt a cluster this run did not create.
+if kind get clusters 2>/dev/null | grep -qx "$cluster"; then
+  echo "a kind cluster named $cluster already exists; delete it or rename it first" >&2
+  exit 1
+fi
+
 work=$(mktemp -d)
 
 # kind would otherwise switch the current context of the default kubeconfig.
