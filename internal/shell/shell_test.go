@@ -366,3 +366,183 @@ func TestInvocationBudget(t *testing.T) {
 		t.Fatalf("invocations=%d problems=%v", len(a.Invocations), a.Problems)
 	}
 }
+
+func TestFileNamesInWritesAndArguments(t *testing.T) {
+	if !last(t, `echo x > d/q`).WritesFile("q") || last(t, `echo x > r`).WritesFile("q") || last(t, `echo q`).WritesFile("q") {
+		t.Error("WritesFile is wrong")
+	}
+	for _, cmd := range []string{`curl -oq u`, `curl --output=q u`, `cp a d/q`} {
+		if !last(t, cmd).ArgNamesFile("q") {
+			t.Errorf("%s: not noticed", cmd)
+		}
+	}
+	for _, cmd := range []string{`curl u`, `tool --q`, `tool -q`} {
+		if last(t, cmd).ArgNamesFile("q") {
+			t.Errorf("%s: noticed", cmd)
+		}
+	}
+}
+
+// Each of these once ended without recording anything, so nothing later could see it.
+func TestProblemsForCommandsThatCannotBeRead(t *testing.T) {
+	for _, cmd := range []string{
+		`$(pick) destroy`, `parallel "$X"`, `parallel ::: "$X"`, `parallel -a cmds`, `parallel --arg-file=cmds`, `parallel :::: cmds`,
+		`parallel < cmds`, `cat cmds | parallel`, "parallel <<E\ncmd\nE", `watch "$X"`, `bash -c -- "$X"`, `bash -- "$X"`, `bash "$X"`, `bash -c "$X"`,
+		`cat x | bash -s "$X"`, `cat x | bash -s -- y`, `cat x | bash /dev/stdin`, `cat x | . /dev/stdin`, `cat x | python3 /dev/stdin`, `cat x | python3 -`,
+		`source <(x)`, `python3 "$X"`, `perl -e"$X"`, "bash <<E\n$X\nE", "python3 <<E\n$X\nE", `cat x | python3`, `cat x | bash`, `env -S'a b'`, `env --split-string=x`,
+	} {
+		if a := Analyze(cmd, "/w"); len(a.Problems) == 0 {
+			t.Errorf("%s: want a problem, got %+v", cmd, a.Invocations)
+		}
+	}
+	for _, cmd := range []string{`parallel`, `parallel --version`, `watch`, `watch -n 1`, `bash -s`, `python3 -c`, `python3 -c x -`, `python3 -c x "$Y"`} {
+		if a := Analyze(cmd, "/w"); len(a.Problems) != 0 {
+			t.Errorf("%s: unexpected %v", cmd, a.Problems)
+		}
+	}
+}
+
+func TestTextHandedToAShell(t *testing.T) {
+	cases := map[string]string{
+		`bash --command='tool x'`:       "tool",
+		`fish --command 'tool x'`:       "tool",
+		`bash -o pipefail -c 'tool x'`:  "tool",
+		`bash -c -- 'tool x'`:           "tool",
+		`bash -s -c 'tool x'`:           "tool",
+		"bash -s y <<E\ntool x\nE":      "tool",
+		"bash /dev/stdin <<E\ntool\nE":  "tool",
+		"source /dev/fd/0 <<E\ntool\nE": "tool",
+		`parallel ::: 'tool x'`:         "tool",
+		`sudo -- tool x`:                "tool",
+		`command -p tool x`:             "tool",
+	}
+	for cmd, want := range cases {
+		if inv := last(t, cmd); inv.Tool != want {
+			t.Errorf("%s: got %q", cmd, inv.Tool)
+		}
+	}
+	if inv := last(t, `bash < run.sh`); inv.Tool != ScriptTool || inv.Args[0].Value != "run.sh" {
+		t.Errorf("redirected script: %+v", inv)
+	}
+	if inv := last(t, `bash -s < run.sh`); inv.Tool != ScriptTool || inv.Args[0].Value != "run.sh" {
+		t.Errorf("redirected script after -s: %+v", inv)
+	}
+}
+
+func TestInterpreterFlagsDifferByLanguage(t *testing.T) {
+	cases := map[string]struct{ tool, arg string }{
+		`ruby -r json -e 'x'`:          {CodeTool, "x"},
+		`ruby -I lib run.rb`:           {ScriptTool, "run.rb"},
+		`perl -p -e 'x' f`:             {CodeTool, "x"},
+		`perl -I lib run.pl`:           {ScriptTool, "run.pl"},
+		`perl -i.bak -pe 'x' f`:        {CodeTool, "x"},
+		`perl -e 'a' -e 'b'`:           {CodeTool, "b"},
+		`perl -e'x'`:                   {CodeTool, "-ex"},
+		`node --print 'x'`:             {CodeTool, "x"},
+		`node -r mod run.js`:           {ScriptTool, "run.js"},
+		`node --eval=x`:                {CodeTool, "--eval=x"},
+		`php -r 'x'`:                   {CodeTool, "x"},
+		`php -d a=b run.php`:           {ScriptTool, "run.php"},
+		`python3 -E run.py`:            {ScriptTool, "run.py"},
+		`python3 -I run.py`:            {ScriptTool, "run.py"},
+		`python3 -W ignore run.py`:     {ScriptTool, "run.py"},
+		`python3.12 run.py`:            {ScriptTool, "run.py"},
+		`python3 < run.py`:             {ScriptTool, "run.py"},
+		"python3 /dev/stdin <<E\nx\nE": {CodeTool, "x\n"},
+		"python3 - <<E\nx\nE":          {CodeTool, "x\n"},
+	}
+	for cmd, want := range cases {
+		inv := last(t, cmd)
+		if inv.Tool != want.tool || inv.Args[0].Value != want.arg {
+			t.Errorf("%s: got %s %+v", cmd, inv.Tool, inv.Args)
+		}
+	}
+}
+
+func TestEnvOptions(t *testing.T) {
+	for _, cmd := range []string{`env -u K tool`, `env --unset K tool`, `env --unset=K tool`, `env -uK tool`} {
+		inv := last(t, cmd)
+		if _, ok := inv.Env["K"]; !ok || inv.Tool != "tool" {
+			t.Errorf("%s: %+v", cmd, inv)
+		}
+	}
+	if _, ok := last(t, `env -i tool`).Env["KUBECONFIG"]; !ok {
+		t.Error("env -i drops KUBECONFIG")
+	}
+	for _, cmd := range []string{`env -C d tool`, `env --chdir d tool`, `env -Cd tool`, `env --chdir=d tool`} {
+		if inv := last(t, cmd); inv.DirKnown || inv.Tool != "tool" {
+			t.Errorf("%s: %+v", cmd, inv)
+		}
+	}
+	if inv := last(t, `env "$X" tool`); inv.Tool != "" {
+		t.Errorf("a computed word may be the program: %+v", inv)
+	}
+	if a := Analyze(`env -u`, "/w"); len(a.Invocations) != 0 {
+		t.Errorf("nothing runs: %+v", a.Invocations)
+	}
+}
+
+func TestTheRestOfWhatEmitRecognises(t *testing.T) {
+	if inv := last(t, `terraform-1.9 destroy`); inv.Tool != "terraform" || inv.Bare {
+		t.Errorf("versioned: %+v", inv)
+	}
+	if got := tools(Analyze(`/usr/bin/make test`, "/w")); got != ScriptTool+",make" {
+		t.Errorf("make by path: %q", got)
+	}
+	if got := tools(Analyze(`./gmake test`, "/w")); got != ScriptTool+",gmake" {
+		t.Errorf("gmake by path: %q", got)
+	}
+	for _, cmd := range []string{`oc project x; kubectl get pods`, `oc login u; kubectl get pods`, `source env.sh; kubectl get pods`, `source "$X"; kubectl get pods`} {
+		if last(t, cmd).TargetChange == "" {
+			t.Errorf("%s: not noticed", cmd)
+		}
+	}
+	if got := last(t, `oc; kubectl get pods`).TargetChange; got != "" {
+		t.Errorf("oc alone: %q", got)
+	}
+	if inv := last(t, `sudo -D d tool`); inv.DirKnown {
+		t.Errorf("sudo -D: %+v", inv)
+	}
+	if inv := last(t, `sudo A=1 tool`); inv.Env["A"].Value != "1" {
+		t.Errorf("sudo assignment: %+v", inv)
+	}
+	if a := Analyze(`command -v tool`, "/w"); len(a.Invocations) != 0 {
+		t.Errorf("command -v runs nothing: %+v", a.Invocations)
+	}
+	if inv := last(t, `command -p tool`); inv.Tool != "tool" {
+		t.Errorf("command -p: %+v", inv)
+	}
+	if a := Analyze(`time`, "/w"); len(a.Invocations) != 0 {
+		t.Errorf("time alone: %+v", a.Invocations)
+	}
+}
+
+func TestWordsAndAssignments(t *testing.T) {
+	cases := map[string]Arg{
+		"a\\\nb":     {Value: "ab", Literal: true},
+		"\"a\\\nb\"": {Value: "ab", Literal: true},
+		"-I{}":       {Value: "-I{}", Literal: true},
+		"{x}":        {Value: "{x}", Literal: true},
+		"{1..3}":     {Value: "{1..3}"},
+		"~/x":        {Value: "~/x", Home: true},
+		"~/*":        {Value: "~/*"},
+		"~/{a,b}":    {Value: "~/{a,b}"},
+	}
+	for word, want := range cases {
+		if got := last(t, "tool "+word).Args[0]; got != want {
+			t.Errorf("%q: got %+v", word, got)
+		}
+	}
+	if got := last(t, `cmd=(a b); $cmd`).Env["cmd"]; !got.Literal || got.Value != "a b" {
+		t.Errorf("array: %+v", got)
+	}
+	if got := last(t, `cmd=(a "$b"); $cmd`).Env["cmd"]; got.Literal {
+		t.Errorf("computed array: %+v", got)
+	}
+	if got := last(t, `A=1; (tool)`).Env["A"]; got.Value != "1" {
+		t.Errorf("a subshell sees the parent's variables: %+v", got)
+	}
+	if got := last(t, `echo x > "$OUT"`).Writes; len(got) != 0 {
+		t.Errorf("a computed target is not a known write: %v", got)
+	}
+}

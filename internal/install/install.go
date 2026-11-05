@@ -64,6 +64,10 @@ func parseObject(raw []byte) (object, error) {
 	if _, err := dec.Token(); err != nil {
 		return nil, err
 	}
+	// Rewriting the file would silently drop whatever follows the object.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("unexpected data after the JSON object")
+	}
 	return out, nil
 }
 

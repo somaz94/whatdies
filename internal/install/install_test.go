@@ -237,3 +237,68 @@ func TestUnreadablePathFails(t *testing.T) {
 		t.Fatal("reading a directory should fail")
 	}
 }
+
+func TestSettingsThatAreNotOneJSONObject(t *testing.T) {
+	for _, raw := range []string{`{1:2}`, `{"a":}`, `{"a":1`, `{"a":1} trailing`, `{} {}`, `[]`, ``} {
+		if _, err := parseObject([]byte(raw)); err == nil {
+			t.Errorf("%q: want an error", raw)
+		}
+	}
+	if _, err := parseObject([]byte("{\"a\":1}\n")); err != nil {
+		t.Errorf("a trailing newline is fine: %v", err)
+	}
+}
+
+// Rewriting a file with data after its JSON would silently drop that data.
+func TestInstallRefusesToDropWhatItCannotRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	const body = "{\"a\":1}\n{\"b\":2}\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(path, "/bin/whatdies"); err == nil {
+		t.Fatal("want an error")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != body {
+		t.Fatalf("file changed: %q %v", got, err)
+	}
+}
+
+func TestWriteAtomicFailures(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(filepath.Join(file, "sub", "settings.json"), []byte("{}")); err == nil {
+		t.Error("a parent that is a file: want an error")
+	}
+
+	readOnly := t.TempDir()
+	existing := filepath.Join(readOnly, "settings.json")
+	if err := os.WriteFile(existing, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnly, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o700) })
+	if err := writeAtomic(filepath.Join(readOnly, "new.json"), []byte("{}")); err == nil {
+		t.Error("an unwritable directory: want an error")
+	}
+	if err := writeAtomic(existing, []byte("{}")); err == nil {
+		t.Error("nowhere to put the backup: want an error")
+	}
+
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked.json")
+	if err := os.WriteFile(locked, []byte("{}"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(locked, []byte("{}")); err == nil {
+		t.Error("an unreadable original cannot be backed up: want an error")
+	}
+}
