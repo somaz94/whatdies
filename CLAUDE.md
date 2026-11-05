@@ -32,7 +32,7 @@ Keep coverage at 90% or above, excluding `cmd/main.go`. `make cover-check` enfor
 - **`TF_CLI_ARGS` from the user's environment is ignored, set by the command it is ask.** The first version treated both as ask and blocked every plan on a real shell that sets it (2026-11-05)
 - **Advice must be something the tool can do.** `terraform plan -out=.terraform/x` fails when `.terraform/` does not exist, which is why `planPath` checks (2026-11-05)
 - **`stateful.yaml` is data.** A new resource type is a line there, and a type missing from it still gets ask
-- **Decode only the plan fields a verdict needs** (`planDoc`). Plans hold secrets in clear text, and what is never decoded cannot reach a message. Text from a plan or a cluster goes through `clean`, since it reaches an agent as part of the reason
+- **Decode only the plan fields a verdict needs** (`planDoc`). Plans hold secrets in clear text, and what is never decoded cannot reach a message. `verdict.AskBecause` and `DenyBecause` clean every line, since text quoted from a plan, a cluster or the command reaches an agent. Calling `clean` at each quote missed some (2026-11-05)
 
 <br/>
 

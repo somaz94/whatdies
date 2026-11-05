@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -86,6 +87,15 @@ func (p *prober) get(ctx context.Context, args ...string) (list, error) {
 	return l, nil
 }
 
+// orMissing names the case where kubectl worked and returned nothing, which would
+// otherwise print as <nil>.
+func orMissing(err error) error {
+	if err == nil {
+		return errors.New("no such object")
+	}
+	return err
+}
+
 func (p *prober) contextLabel(ctx context.Context) string {
 	if p.label != "" {
 		return p.label
@@ -98,7 +108,7 @@ func (p *prober) contextLabel(ctx context.Context) string {
 			p.label = "the current context"
 		}
 	}
-	return clean(p.label)
+	return p.label
 }
 
 func (p *prober) nsArgs() []string {
@@ -121,11 +131,11 @@ func (p *prober) judge(ctx context.Context, kind, name string, c command) verdic
 	case "crd":
 		return p.judgeCRD(ctx, name)
 	}
-	return verdict.AskBecause(fmt.Sprintf("deletes %s %s", clean(kind), clean(name)))
+	return verdict.AskBecause(fmt.Sprintf("deletes %s %s", kind, name))
 }
 
 func (p *prober) judgeNamespace(ctx context.Context, ns string) verdict.Verdict {
-	where := fmt.Sprintf("namespace %s on %s", clean(ns), p.contextLabel(ctx))
+	where := fmt.Sprintf("namespace %s on %s", ns, p.contextLabel(ctx))
 	objects, err := p.get(ctx, "pvc,statefulset,deployment,pod", "-n", ns)
 	if err != nil {
 		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not list its contents: %v", where, err))
@@ -144,7 +154,7 @@ func (p *prober) judgeNamespace(ctx context.Context, ns string) verdict.Verdict 
 }
 
 func (p *prober) judgePVC(ctx context.Context, name string) verdict.Verdict {
-	where := fmt.Sprintf("PVC %s on %s", clean(name), p.contextLabel(ctx))
+	where := fmt.Sprintf("PVC %s on %s", name, p.contextLabel(ctx))
 	objects, err := p.get(ctx, append([]string{"pvc", name}, p.nsArgs()...)...)
 	if err != nil {
 		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read it: %v", where, err))
@@ -174,9 +184,9 @@ func (p *prober) judgeClaims(ctx context.Context, summary string, claims []objec
 	}
 	var gone, kept, unknown []string
 	for _, pv := range pvs.Items {
-		line := fmt.Sprintf("PVC %s -> PV %s", clean(byVolume[pv.Metadata.Name]), clean(pv.Metadata.Name))
+		line := fmt.Sprintf("PVC %s -> PV %s", byVolume[pv.Metadata.Name], pv.Metadata.Name)
 		if s := pv.Spec.Capacity.Storage; s != "" {
-			line += " (" + clean(s) + ")"
+			line += " (" + s + ")"
 		}
 		switch pv.Spec.Reclaim {
 		case "Retain":
@@ -197,10 +207,10 @@ func (p *prober) judgeClaims(ctx context.Context, summary string, claims []objec
 }
 
 func (p *prober) judgePV(ctx context.Context, name string) verdict.Verdict {
-	where := fmt.Sprintf("PV %s on %s", clean(name), p.contextLabel(ctx))
+	where := fmt.Sprintf("PV %s on %s", name, p.contextLabel(ctx))
 	objects, err := p.get(ctx, "pv", name)
 	if err != nil || len(objects.Items) == 0 {
-		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read its reclaim policy: %v", where, err))
+		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read its reclaim policy: %v", where, orMissing(err)))
 	}
 	switch policy := objects.Items[0].Spec.Reclaim; policy {
 	case "Delete", "Recycle":
@@ -214,13 +224,13 @@ func (p *prober) judgePV(ctx context.Context, name string) verdict.Verdict {
 // judgeStatefulSet separates the two meanings of deleting one: by default the
 // claims outlive it, so it is not data loss unless the set says otherwise.
 func (p *prober) judgeStatefulSet(ctx context.Context, name string, c command) verdict.Verdict {
-	where := fmt.Sprintf("statefulset %s on %s", clean(name), p.contextLabel(ctx))
+	where := fmt.Sprintf("statefulset %s on %s", name, p.contextLabel(ctx))
 	if c.value("--cascade") == "orphan" {
 		return verdict.AskBecause("deletes " + where + " but orphans its pods")
 	}
 	objects, err := p.get(ctx, append([]string{"statefulset", name}, p.nsArgs()...)...)
 	if err != nil || len(objects.Items) == 0 {
-		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read it: %v", where, err))
+		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read it: %v", where, orMissing(err)))
 	}
 	sts := objects.Items[0]
 	if sts.Spec.Retention.WhenDeleted != "Delete" {
@@ -253,10 +263,10 @@ func (p *prober) judgeStatefulSet(ctx context.Context, name string, c command) v
 }
 
 func (p *prober) judgeCRD(ctx context.Context, name string) verdict.Verdict {
-	where := fmt.Sprintf("CRD %s on %s, which removes every instance of it", clean(name), p.contextLabel(ctx))
+	where := fmt.Sprintf("CRD %s on %s, which removes every instance of it", name, p.contextLabel(ctx))
 	objects, err := p.get(ctx, "crd", name)
 	if err != nil || len(objects.Items) == 0 {
-		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read it: %v", where, err))
+		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read it: %v", where, orMissing(err)))
 	}
 	crd := objects.Items[0]
 	if !validName.MatchString(crd.Spec.Names.Plural) || !validName.MatchString(crd.Spec.Group) {
@@ -267,14 +277,4 @@ func (p *prober) judgeCRD(ctx context.Context, name string) verdict.Verdict {
 		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not count them: %v", where, err))
 	}
 	return verdict.AskBecause(fmt.Sprintf("deletes %s (%d found)", where, len(instances.Items)))
-}
-
-// clean keeps text from the cluster on one line, since it reaches the agent.
-func clean(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return ' '
-		}
-		return r
-	}, s)
 }

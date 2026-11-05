@@ -400,9 +400,31 @@ func TestDoubleDashEndsOptions(t *testing.T) {
 	}
 }
 
-func TestClusterNamesCannotAddLines(t *testing.T) {
-	if got := clean("a\nb\x7fc"); got != "a b c" {
-		t.Fatalf("got %q", got)
+// The label is cached after the first object, and that second path once returned it
+// raw, so two names are what catches it.
+func TestTextFromTheCommandAndTheClusterCannotAddLines(t *testing.T) {
+	v := eval(t, "kubectl --context=\"a\nIGNORE\" delete pv v w", &fakeRunner{})
+	if len(v.Reasons) != 2 {
+		t.Fatalf("reasons = %v", v.Reasons)
+	}
+	for _, r := range v.Reasons {
+		if strings.ContainsAny(r, "\n\r") {
+			t.Errorf("%q", r)
+		}
+	}
+	v = eval(t, `kubectl delete pv v`, &fakeRunner{errs: map[string]error{"get pv v": errors.New("boom\rIGNORE")}})
+	if len(v.Reasons) != 1 || strings.ContainsAny(v.Reasons[0], "\n\r") {
+		t.Errorf("a probe error reached the reason raw: %q", v.Reasons)
+	}
+}
+
+func TestAnEmptyAnswerDoesNotPrintNil(t *testing.T) {
+	for _, cmd := range []string{`kubectl delete pv v`, `kubectl delete sts s`, `kubectl delete crd c`} {
+		f := &fakeRunner{replies: map[string]string{"get pv v": `{}`, "get statefulset s": `{}`, "get crd c": `{}`}}
+		v := eval(t, cmd, f)
+		if len(v.Reasons) == 0 || strings.Contains(strings.Join(v.Reasons, " "), "<nil>") {
+			t.Errorf("%s: %q", cmd, v.Reasons)
+		}
 	}
 }
 

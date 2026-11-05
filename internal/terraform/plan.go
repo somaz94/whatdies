@@ -59,6 +59,9 @@ const (
 // rather than harmless, because new actions have appeared before: the JSON
 // documentation does not list forget at all.
 func classify(actions []string) effect {
+	if len(actions) == 0 {
+		return unclear
+	}
 	var del, create, unknown, forget bool
 	for _, a := range actions {
 		switch a {
@@ -121,17 +124,17 @@ func JudgePlan(raw []byte, stateful map[string]bool) verdict.Verdict {
 		case harmless:
 			continue
 		case unclear:
-			vague = append(vague, fmt.Sprintf("%s has actions %v, which whatdies cannot rule out as destructive", clean(rc.Address), rc.Change.Actions))
+			vague = append(vague, fmt.Sprintf("%s has actions %v, which whatdies cannot rule out as destructive", rc.Address, rc.Change.Actions))
 			continue
 		case replaces:
 			verb = "replaces"
 		}
-		line := fmt.Sprintf("%s %s", verb, clean(rc.Address))
+		line := fmt.Sprintf("%s %s", verb, rc.Address)
 		if rc.Deposed != "" {
 			line += " (deposed object)"
 		}
 		if stateful[rc.Type] {
-			fatal = append(fatal, line+" ("+clean(rc.Type)+" holds data)")
+			fatal = append(fatal, line+" ("+rc.Type+" holds data)")
 		} else {
 			other = append(other, line)
 		}
@@ -182,15 +185,4 @@ func hasProvisioner(m module) bool {
 		}
 	}
 	return false
-}
-
-// clean keeps text from a plan on one line. These strings reach the agent as
-// part of the reason, so they must not be able to start a new instruction.
-func clean(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return ' '
-		}
-		return r
-	}, s)
 }

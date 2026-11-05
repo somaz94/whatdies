@@ -57,3 +57,26 @@ func TestMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestConstructorsKeepTextOnOneLine(t *testing.T) {
+	for _, v := range []Verdict{
+		AskBecause("a\nb\x7fc\rd\te"),
+		DenyBecause("a\nb\x7fc\rd\te", "a\nb\x7fc\rd\te"),
+	} {
+		if v.Reasons[0] != "a b c d e" {
+			t.Errorf("reason %q", v.Reasons[0])
+		}
+	}
+	if v := DenyBecause("x\ny"); v.Advice != "x y" {
+		t.Errorf("advice %q", v.Advice)
+	}
+	// Characters that move the next line or reorder what a person reads.
+	for _, r := range []string{"\u2028", "\u2029", "\u202e", "\u2066", "\u0085", "\u200b"} {
+		if v := AskBecause("a" + r + "b"); v.Reasons[0] != "a b" {
+			t.Errorf("%q: %q", r, v.Reasons[0])
+		}
+	}
+	if v := AskBecause("한글 é ok"); v.Reasons[0] != "한글 é ok" {
+		t.Errorf("printable text changed: %q", v.Reasons[0])
+	}
+}

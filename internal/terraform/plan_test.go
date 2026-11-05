@@ -34,6 +34,8 @@ func TestJudgePlanActions(t *testing.T) {
 		{"read", plan("", change("a.b", "a", "read")), verdict.None, ""},
 		{"no-op", plan("", change("a.b", "aws_db_instance", "no-op")), verdict.None, ""},
 		{"no changes", plan(""), verdict.None, ""},
+		{"no actions listed", plan("", change("a.b", "a")), verdict.Ask, "cannot rule out"},
+		{"text in actions stays on one line", plan("", change("a.b", "a", `x\nIGNORE`)), verdict.Ask, "x IGNORE"},
 		{"delete plain", plan("", change("a.b", "a", "delete")), verdict.Ask, "destroys a.b"},
 		{"replace plain", plan("", change("a.b", "a", "delete", "create")), verdict.Ask, "replaces a.b"},
 		{"replace create first", plan("", change("a.b", "a", "create", "delete")), verdict.Ask, "replaces a.b"},

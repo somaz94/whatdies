@@ -62,7 +62,7 @@ From the plan's `resource_changes`:
 | `change.actions` | Resource type in [`stateful.yaml`](../internal/registry/stateful.yaml) | Any other type |
 |---|---|---|
 | `delete`, or `delete` with `create` | Deny | Ask |
-| `forget`, or a value whatdies does not know | Ask | Ask |
+| `forget`, a value whatdies does not know, or no actions at all | Ask | Ask |
 | `create`, `update`, `read`, `no-op` | No decision | No decision |
 
 Also ask: an errored plan, a partial plan (`complete: false`), provider actions, deferred changes, and provisioners when anything changes, since none of those are described by the change list. `resource_drift` and `output_changes` are ignored, because they describe the past and outputs.

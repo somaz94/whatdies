@@ -1,7 +1,10 @@
 // Package verdict holds the decision whatdies reaches about a command.
 package verdict
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Decision is what the hook tells the agent. There is deliberately no Allow:
 // an allow skips the permission prompt the user would otherwise see, and
@@ -35,11 +38,31 @@ type Verdict struct {
 }
 
 // AskBecause returns an Ask verdict.
-func AskBecause(reason ...string) Verdict { return Verdict{Decision: Ask, Reasons: reason} }
+func AskBecause(reason ...string) Verdict { return Verdict{Decision: Ask, Reasons: cleanAll(reason)} }
 
 // DenyBecause returns a Deny verdict with advice for the agent.
 func DenyBecause(advice string, reason ...string) Verdict {
-	return Verdict{Decision: Deny, Reasons: reason, Advice: advice}
+	return Verdict{Decision: Deny, Reasons: cleanAll(reason), Advice: clean(advice)}
+}
+
+func cleanAll(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = clean(l)
+	}
+	return out
+}
+
+// clean keeps text on one line. Reasons quote plans, clusters and the command
+// itself and reach the agent, so they must not be able to start a new instruction.
+// It lives in the constructors because calling it at each quote missed some.
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // Join combines two verdicts: the stricter decision and advice win, and the
