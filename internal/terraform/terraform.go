@@ -4,8 +4,10 @@ package terraform
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/somaz94/whatdies/internal/runner"
@@ -136,7 +138,7 @@ func evaluateState(rest []shell.Arg) verdict.Verdict {
 			return verdict.Verdict{}
 		}
 	}
-	return verdict.AskBecause("terraform state " + first(rest) + " edits state directly, which a plan cannot show")
+	return verdict.AskBecause(strings.TrimSpace("terraform state "+first(rest)) + " edits state directly, which a plan cannot show")
 }
 
 func noSavedPlan(inv shell.Invocation, chdir, what, planCmd string) verdict.Verdict {
@@ -218,7 +220,7 @@ func evaluateApply(ctx context.Context, inv shell.Invocation, args []shell.Arg, 
 // because terraform rejects -target, -replace and -destroy alongside a plan file.
 // Decided 2026-11-05, after the rule fired on a real shell and blocked every plan.
 func envOverride(inv shell.Invocation) string {
-	for k := range inv.Env {
+	for _, k := range slices.Sorted(maps.Keys(inv.Env)) {
 		if strings.HasPrefix(k, "TF_CLI_ARGS") || k == "TF_WORKSPACE" || k == "TF_DATA_DIR" || k == "PATH" {
 			return k
 		}

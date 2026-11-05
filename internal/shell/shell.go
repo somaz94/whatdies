@@ -4,6 +4,7 @@ package shell
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -16,6 +17,17 @@ type Arg struct {
 	Literal bool
 	// Subst is true when the value comes from running a command.
 	Subst bool
+	// Home is true for a plain ~/path. Its value still depends on the environment,
+	// so it stays non-literal except where a program file is being named.
+	Home bool
+}
+
+// program reads the word as a program file, so one named from ~/ is still read.
+func (x Arg) program() Arg {
+	if x.Home {
+		x.Literal = true
+	}
+	return x
 }
 
 // Invocation is one program the command would start.
@@ -63,6 +75,9 @@ func (i Invocation) NamesFile(path string) bool {
 func (i Invocation) ArgNamesFile(path string) bool {
 	base := filepath.Base(path)
 	for _, v := range i.Literals() {
+		if strings.HasPrefix(v, "-") && !strings.HasPrefix(v, "--") && len(v) > 2 && filepath.Base(v[2:]) == base {
+			return true
+		}
 		if _, after, ok := strings.Cut(v, "="); ok {
 			v = after
 		}
@@ -197,6 +212,9 @@ func (a *analyzer) stmt(s *syntax.Stmt, f flags) {
 		a.substs(c.Word, f)
 		a.conditional(func() {
 			for _, item := range c.Items {
+				for _, p := range item.Patterns {
+					a.substs(p, f)
+				}
 				a.stmts(item.Stmts, f)
 			}
 		})
@@ -390,7 +408,10 @@ func wordArg(w *syntax.Word) Arg {
 	for _, part := range w.Parts {
 		switch p := part.(type) {
 		case *syntax.Lit:
-			if strings.ContainsAny(p.Value, "*?[{~") && p.Value != "{}" {
+			if rest, home := strings.CutPrefix(p.Value, "~/"); home && len(w.Parts) == 1 && !expands(rest) {
+				return Arg{Value: unescape(p.Value), Home: true}
+			}
+			if expands(p.Value) {
 				return Arg{Value: p.Value}
 			}
 			b.WriteString(unescape(p.Value))
@@ -412,6 +433,14 @@ func wordArg(w *syntax.Word) Arg {
 		}
 	}
 	return Arg{Value: b.String(), Literal: true}
+}
+
+// braceList matches what bash expands: {a,b} and {1..3}. It leaves {} and {x} alone,
+// so xargs -I{} is a plain word.
+var braceList = regexp.MustCompile(`\{[^}]*(?:,|\.\.)[^}]*\}`)
+
+func expands(s string) bool {
+	return strings.ContainsAny(s, "*?[~") || braceList.MatchString(s)
 }
 
 func runsCommand(part syntax.WordPart) bool {

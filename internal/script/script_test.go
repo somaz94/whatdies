@@ -43,6 +43,22 @@ func TestMention(t *testing.T) {
 	}
 }
 
+func TestMentionHasNoLineLimit(t *testing.T) {
+	text := strings.Repeat("x", maxBytes+10) + " terraform destroy\n"
+	if Mention(text) == "" {
+		t.Error("a line past the scanner's old limit stopped the search")
+	}
+}
+
+func TestMentionContinuations(t *testing.T) {
+	for _, text := range []string{"terraform \\\n  destroy", "terraform \\\r\n  destroy", "# note \\\nterraform destroy", "terraform \\\n"} {
+		got := Mention(text)
+		if (got == "") != (text == "terraform \\\n") {
+			t.Errorf("%q: got %q", text, got)
+		}
+	}
+}
+
 func write(t *testing.T, dir, name, text string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -115,7 +131,7 @@ func TestMakeFollowsTargetsAndPrerequisites(t *testing.T) {
 		{[]string{"from-an-include"}, true},
 	}
 	for _, c := range cases {
-		if got := Make(dir, "", c.targets) != ""; got != c.hit {
+		if got := Make(dir, "", c.targets, nil, nil) != ""; got != c.hit {
 			t.Errorf("%v: hit=%v", c.targets, got)
 		}
 	}
@@ -123,18 +139,18 @@ func TestMakeFollowsTargetsAndPrerequisites(t *testing.T) {
 
 func TestMakeFinds(t *testing.T) {
 	dir := t.TempDir()
-	if Make(dir, "", nil) != "" {
+	if Make(dir, "", nil, nil, nil) != "" {
 		t.Error("no makefile must be empty")
 	}
 	write(t, dir, "Custom.mk", "go:\n\tterraform destroy\n")
-	if Make(dir, "Custom.mk", nil) == "" {
+	if Make(dir, "Custom.mk", nil, nil, nil) == "" {
 		t.Error("-f file missed")
 	}
-	if Make(dir, filepath.Join(dir, "Custom.mk"), []string{"go"}) == "" {
+	if Make(dir, filepath.Join(dir, "Custom.mk"), []string{"go"}, nil, nil) == "" {
 		t.Error("absolute -f file missed")
 	}
 	write(t, dir, "GNUmakefile", "VERSION := 1\n")
-	if Make(dir, "", nil) != "" {
+	if Make(dir, "", nil, nil, nil) != "" {
 		t.Error("a file without rules must be empty")
 	}
 }
@@ -142,7 +158,7 @@ func TestMakeFinds(t *testing.T) {
 func TestMakeSurvivesCycles(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "Makefile", "a: b\nb: a\n\tgo test\n")
-	if Make(dir, "", []string{"a"}) != "" {
+	if Make(dir, "", []string{"a"}, nil, nil) != "" {
 		t.Error("unexpected mention")
 	}
 }

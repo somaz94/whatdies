@@ -54,16 +54,32 @@ var wrappers = map[string]wrapper{
 
 var shells = set("ash", "bash", "dash", "fish", "ksh", "sh", "zsh")
 
-var interpreters = set("node", "perl", "php", "python", "python2", "python3", "ruby")
+// interpreterName matches an interpreter, including versioned names such as python3.12.
+var interpreterName = regexp.MustCompile(`^(node|perl|php|python|ruby)[0-9.]*$`)
 
-// inlineCodeFlags take program text on an interpreter's command line.
-var inlineCodeFlags = set("--eval", "-E", "-p", "-r")
+// interpreterSpec is per language because the same flag differs: -p is code for
+// node and a loop for perl, -r is code for php and a library for ruby.
+type interpreterSpec struct {
+	code map[string]bool
+	// cluster matches a flag group ending in the code flag, as in perl -ne.
+	cluster *regexp.Regexp
+	value   map[string]bool
+}
 
-// inlineCodeCluster matches -c and -e and clusters ending in them, as in perl -ne
-// and python3 -Ic.
-var inlineCodeCluster = regexp.MustCompile(`^-[A-Za-z]*[ce]$`)
+func (s interpreterSpec) isCode(v string) bool {
+	return s.code[v] || (s.cluster != nil && s.cluster.MatchString(v))
+}
 
-var interpreterValueFlags = set("-I", "-W", "-X")
+var interpreterSpecs = map[string]interpreterSpec{
+	"node":   {code: set("-e", "--eval", "-p", "--print", "-pe"), value: set("-r", "--require", "--import", "--loader", "-C", "--conditions")},
+	"perl":   {cluster: regexp.MustCompile(`^-[A-Za-z0-9]*[eE]$`), value: set("-I")},
+	"php":    {code: set("-r"), value: set("-d", "-c", "-z")},
+	"python": {cluster: regexp.MustCompile(`^-[A-Za-z]*c$`), value: set("-W", "-X")},
+	"ruby":   {cluster: regexp.MustCompile(`^-[A-Za-z]*e$`), value: set("-r", "-I", "-C", "-E")},
+}
+
+// stdinPaths name a program file that is really stdin.
+var stdinPaths = set("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 
 // shellValueOptions take the next word, which must not be read as a script.
 var shellValueOptions = set("-o", "+o", "-O", "+O", "--init-file", "--rcfile")
@@ -76,7 +92,8 @@ func (a *analyzer) emit(args []Arg, inline map[string]Arg, in stdin, f flags) {
 	if len(args) == 0 {
 		return
 	}
-	head := args[0]
+	head := args[0].program()
+	args = append([]Arg{head}, args[1:]...)
 	if !head.Literal {
 		if head.Subst {
 			a.problem("the program to run comes from another command")
@@ -100,7 +117,7 @@ func (a *analyzer) emit(args []Arg, inline map[string]Arg, in stdin, f flags) {
 		a.xargs(rest, inline, in, f)
 		return
 	case name == "parallel":
-		a.parallel(rest, f)
+		a.parallel(rest, in, f)
 		return
 	case name == "watch":
 		a.watch(rest, f)
@@ -114,10 +131,10 @@ func (a *analyzer) emit(args []Arg, inline map[string]Arg, in stdin, f flags) {
 		a.shell(rest, in, f)
 		return
 	case name == "source" || name == ".":
-		a.script(rest, inline, in)
+		a.script(rest, inline, in, f)
 		return
-	case interpreters[name]:
-		a.interpreter(rest, inline, in)
+	case interpreterName.MatchString(name):
+		a.interpreter(interpreterName.FindStringSubmatch(name)[1], rest, inline, in)
 		return
 	case name == "cd" || name == "pushd":
 		a.cd(rest)
@@ -135,6 +152,10 @@ func (a *analyzer) emit(args []Arg, inline map[string]Arg, in stdin, f flags) {
 	}
 	if !bare && !knownTool(name) {
 		a.add(Invocation{Tool: ScriptTool, Args: args}, inline, in)
+		// What make runs is in the Makefile, not in the make binary.
+		if name == "make" || name == "gmake" {
+			a.add(Invocation{Tool: name, Args: rest}, inline, in)
+		}
 		return
 	}
 	a.add(Invocation{Tool: name, Bare: bare, Args: rest}, inline, in)
@@ -184,6 +205,14 @@ func (a *analyzer) noteTargetChange(name string, args []Arg) {
 	}
 	joined := " " + strings.Join(words, " ") + " "
 	has := func(s string) bool { return strings.Contains(joined, " "+s+" ") }
+	hasAll := func(items ...string) bool {
+		for _, s := range items {
+			if !has(s) {
+				return false
+			}
+		}
+		return true
+	}
 	var reason string
 	switch name {
 	case "kubectx", "kubens", "kctx":
@@ -199,15 +228,15 @@ func (a *analyzer) noteTargetChange(name string, args []Arg) {
 			reason = name + " workspace"
 		}
 	case "aws":
-		if has("eks update-kubeconfig") {
+		if hasAll("eks", "update-kubeconfig") {
 			reason = "aws eks update-kubeconfig"
 		}
 	case "gcloud":
-		if has("container clusters get-credentials") {
+		if hasAll("container", "get-credentials") {
 			reason = "gcloud get-credentials"
 		}
 	case "az":
-		if has("aks get-credentials") {
+		if hasAll("aks", "get-credentials") {
 			reason = "az aks get-credentials"
 		}
 	}
@@ -283,13 +312,25 @@ func (a *analyzer) env1(args []Arg, inline map[string]Arg, in stdin, f flags) {
 			break
 		}
 		switch {
-		case x.Value == "-S" || strings.HasPrefix(x.Value, "--split-string"):
+		case strings.HasPrefix(x.Value, "-S") || strings.HasPrefix(x.Value, "--split-string"):
 			a.problem("env -S builds its command at run time")
 			return
-		case x.Value == "-u" || x.Value == "--unset" || x.Value == "-C" || x.Value == "--chdir":
-			if x.Value == "-C" || x.Value == "--chdir" {
-				a.dirKnown = false
+		case x.Value == "-u" || x.Value == "--unset":
+			if i+1 < len(args) {
+				inline = withEnv(inline, args[i+1].Value, computed)
 			}
+			i += 2
+		case strings.HasPrefix(x.Value, "--unset="):
+			inline = withEnv(inline, strings.TrimPrefix(x.Value, "--unset="), computed)
+			i++
+		case strings.HasPrefix(x.Value, "-u"):
+			inline = withEnv(inline, x.Value[2:], computed)
+			i++
+		case x.Value == "-i" || x.Value == "--ignore-environment":
+			inline = withEnv(inline, "KUBECONFIG", computed)
+			i++
+		case x.Value == "-C" || x.Value == "--chdir":
+			a.dirKnown = false
 			i += 2
 		case x.Value == "--":
 			i++
@@ -327,7 +368,7 @@ func (a *analyzer) xargs(args []Arg, inline map[string]Arg, in stdin, f flags) {
 
 // parallel and watch hand their words to a shell, so one quoted word can be a
 // whole command line.
-func (a *analyzer) parallel(args []Arg, f flags) {
+func (a *analyzer) parallel(args []Arg, in stdin, f flags) {
 	valueFlags := set("-a", "-j", "-n", "-S", "--arg-file", "--jobs", "--max-args", "--sshlogin")
 	i := skipFlags(args, valueFlags)
 	end := i
@@ -335,6 +376,7 @@ func (a *analyzer) parallel(args []Arg, f flags) {
 		end++
 	}
 	if i >= end {
+		a.parallelInput(args, end, in, f)
 		return
 	}
 	text, ok := joined(args[i:end])
@@ -346,6 +388,30 @@ func (a *analyzer) parallel(args []Arg, f flags) {
 		text += " {}"
 	}
 	a.nested(text, f)
+}
+
+// parallelInput handles parallel with no command word, where each input is itself
+// a command line. operands is where ::: or :::: starts, if either was given.
+func (a *analyzer) parallelInput(args []Arg, operands int, in stdin, f flags) {
+	if operands < len(args) && args[operands].Value == ":::" {
+		for _, x := range args[operands+1:] {
+			if !x.Literal {
+				a.problem("parallel runs a command built at run time")
+				return
+			}
+			a.nested(x.Value, f)
+		}
+		return
+	}
+	fromFile := operands < len(args)
+	for _, x := range args[:operands] {
+		if x.Value == "-a" || strings.HasPrefix(x.Value, "--arg-file") {
+			fromFile = true
+		}
+	}
+	if fromFile || in.piped || in.file != nil || in.hasHeredoc {
+		a.problem("parallel runs commands read from its input")
+	}
 }
 
 func (a *analyzer) watch(args []Arg, f flags) {
@@ -425,10 +491,14 @@ func (a *analyzer) nested(text string, f flags) {
 }
 
 func (a *analyzer) shell(args []Arg, in stdin, f flags) {
-	command := false
+	command, fromStdin := false, false
+loop:
 	for i := 0; i < len(args); i++ {
-		x := args[i]
+		x := args[i].program()
 		if !x.Literal {
+			if fromStdin && !command {
+				break
+			}
 			if command {
 				a.problem("a shell runs a command built at run time")
 			} else {
@@ -439,45 +509,70 @@ func (a *analyzer) shell(args []Arg, in stdin, f flags) {
 		v := x.Value
 		switch {
 		case v == "--":
+			if fromStdin && !command {
+				break loop
+			}
 			if i+1 < len(args) {
 				a.shellOperand(args[i+1:], command, in, f)
 				return
 			}
 		case shellValueOptions[v]:
 			i++
+		case strings.HasPrefix(v, "--command="):
+			a.nested(strings.TrimPrefix(v, "--command="), f)
+			return
 		case isCommandFlag(v):
 			command = true
+		case isStdinFlag(v):
+			fromStdin = true
 		case strings.HasPrefix(v, "-") || strings.HasPrefix(v, "+"):
 		default:
+			if fromStdin && !command {
+				break loop
+			}
 			a.shellOperand(args[i:], command, in, f)
 			return
 		}
 	}
-	if command {
-		return
-	}
-	switch {
-	case in.hasHeredoc && in.heredocLiteral:
-		a.nested(in.heredoc, f)
-	case in.hasHeredoc:
-		a.problem("a here-document with expansions is fed to a shell")
-	case in.file != nil && in.file.Literal:
-		a.add(Invocation{Tool: ScriptTool, Args: []Arg{*in.file}}, nil, stdin{})
-	case in.piped || in.file != nil:
-		a.problem("text is piped into a shell")
+	if !command {
+		a.shellStdin(in, f)
 	}
 }
 
 func (a *analyzer) shellOperand(args []Arg, command bool, in stdin, f flags) {
+	x := args[0].program()
 	switch {
-	case !args[0].Literal && command:
+	case !x.Literal && command:
 		a.problem("a shell runs a command built at run time")
-	case !args[0].Literal:
+	case !x.Literal:
 		a.problem("a shell runs a script named at run time")
 	case command:
-		a.nested(args[0].Value, f)
+		a.nested(x.Value, f)
+	case stdinPaths[x.Value]:
+		a.shellStdin(in, f)
 	default:
-		a.add(Invocation{Tool: ScriptTool, Args: args}, nil, in)
+		a.add(Invocation{Tool: ScriptTool, Args: append([]Arg{x}, args[1:]...)}, nil, in)
+	}
+}
+
+func (a *analyzer) shellStdin(in stdin, f flags) {
+	a.stdinProgram("a shell", in,
+		func(text string) { a.nested(text, f) },
+		func(file Arg) { a.add(Invocation{Tool: ScriptTool, Args: []Arg{file}}, nil, stdin{}) })
+}
+
+// stdinProgram handles a program whose text arrives on stdin, as the words after
+// bash -s and any path in stdinPaths are not the program.
+func (a *analyzer) stdinProgram(what string, in stdin, text func(string), file func(Arg)) {
+	switch {
+	case in.hasHeredoc && in.heredocLiteral:
+		text(in.heredoc)
+	case in.hasHeredoc:
+		a.problem("a here-document with expansions is fed to " + what)
+	case in.file != nil && in.file.Literal:
+		file(*in.file)
+	case in.piped || in.file != nil:
+		a.problem("text is piped into " + what)
 	}
 }
 
@@ -490,49 +585,85 @@ func isCommandFlag(v string) bool {
 	return len(v) >= 2 && v[0] == '-' && v[1] != '-' && strings.Contains(v, "c")
 }
 
-func (a *analyzer) script(args []Arg, inline map[string]Arg, in stdin) {
+// isStdinFlag recognises -s and clusters holding it such as -es.
+func isStdinFlag(v string) bool {
+	return len(v) >= 2 && v[0] == '-' && v[1] != '-' && strings.Contains(v, "s")
+}
+
+func (a *analyzer) script(args []Arg, inline map[string]Arg, in stdin, f flags) {
 	if len(args) == 0 {
 		return
 	}
-	if args[0].Subst {
+	x := args[0].program()
+	if x.Subst {
 		a.problem("a script is read from another command")
 		return
 	}
-	a.add(Invocation{Tool: ScriptTool, Args: args[:1]}, inline, in)
+	if stdinPaths[x.Value] {
+		a.shellStdin(in, f)
+		return
+	}
+	a.add(Invocation{Tool: ScriptTool, Args: []Arg{x}}, inline, in)
+	// A sourced file can set KUBECONFIG or TF_WORKSPACE, and the hook does not run it.
+	a.targetChange = strings.TrimSpace("source " + x.Value)
 }
 
-func (a *analyzer) interpreter(args []Arg, inline map[string]Arg, in stdin) {
+func (a *analyzer) interpreter(name string, args []Arg, inline map[string]Arg, in stdin) {
+	spec := interpreterSpecs[name]
+	hadCode := false
 	for i := 0; i < len(args); i++ {
-		x := args[i]
+		x := args[i].program()
 		if !x.Literal {
+			if !hadCode {
+				a.problem("an interpreter runs a script named at run time")
+			}
 			return
 		}
-		if (inlineCodeFlags[x.Value] || inlineCodeCluster.MatchString(x.Value)) && i+1 < len(args) {
-			a.add(Invocation{Tool: CodeTool, Args: args[i+1 : i+2]}, inline, in)
-			return
-		}
-		if x.Value == "-m" {
-			return
-		}
-		if interpreterValueFlags[x.Value] {
+		v := x.Value
+		switch {
+		case spec.isCode(v):
+			if i+1 == len(args) {
+				return
+			}
 			i++
-			continue
-		}
-		if !strings.HasPrefix(x.Value, "-") {
-			a.add(Invocation{Tool: ScriptTool, Args: args[i : i+1]}, inline, in)
+			a.add(Invocation{Tool: CodeTool, Args: args[i : i+1]}, inline, in)
+			hadCode = true
+		case name == "python" && v == "-m":
+			a.add(Invocation{Tool: name, Args: args[i+1:]}, inline, in)
+			return
+		case spec.value[v]:
+			i++
+		case v == "-":
+			if !hadCode {
+				a.interpreterStdin(inline, in)
+			}
+			return
+		case strings.HasPrefix(v, "-"):
+			// The flag may hold the program, as in perl -e'...' and node --eval=...
+			if len(v) > 2 {
+				a.add(Invocation{Tool: CodeTool, Args: []Arg{x}}, inline, in)
+			}
+		case hadCode:
+			return
+		case stdinPaths[v]:
+			a.interpreterStdin(inline, in)
+			return
+		default:
+			a.add(Invocation{Tool: ScriptTool, Args: []Arg{x}}, inline, in)
 			return
 		}
 	}
-	switch {
-	case in.hasHeredoc && in.heredocLiteral:
-		a.add(Invocation{Tool: CodeTool, Args: []Arg{{Value: in.heredoc, Literal: true}}}, inline, in)
-	case in.hasHeredoc:
-		a.problem("a here-document with expansions is fed to an interpreter")
-	case in.file != nil && in.file.Literal:
-		a.add(Invocation{Tool: ScriptTool, Args: []Arg{*in.file}}, inline, stdin{})
-	case in.piped || in.file != nil:
-		a.problem("text is piped into an interpreter")
+	if !hadCode {
+		a.interpreterStdin(inline, in)
 	}
+}
+
+func (a *analyzer) interpreterStdin(inline map[string]Arg, in stdin) {
+	a.stdinProgram("an interpreter", in,
+		func(text string) {
+			a.add(Invocation{Tool: CodeTool, Args: []Arg{{Value: text, Literal: true}}}, inline, in)
+		},
+		func(file Arg) { a.add(Invocation{Tool: ScriptTool, Args: []Arg{file}}, inline, stdin{}) })
 }
 
 func (a *analyzer) cd(args []Arg) {

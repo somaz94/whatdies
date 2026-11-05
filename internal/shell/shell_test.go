@@ -326,10 +326,13 @@ func TestProgramFiles(t *testing.T) {
 			t.Errorf("%s: got %s %+v", cmd, inv.Tool, inv.Args)
 		}
 	}
-	for _, cmd := range []string{`python3 -m pytest`, `python3 "$X"`, `python3`} {
+	for _, cmd := range []string{`python3 "$X"`, `python3`} {
 		if a := Analyze(cmd, "/w"); len(a.Invocations) != 0 {
 			t.Errorf("%s: unexpected %+v", cmd, a.Invocations)
 		}
+	}
+	if inv := last(t, `python3 -m pytest -q`); inv.Tool != "python" || inv.Args[0].Value != "pytest" {
+		t.Errorf("-m: %+v", inv)
 	}
 }
 

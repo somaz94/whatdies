@@ -4,8 +4,8 @@
 package script
 
 import (
-	"bufio"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,8 +21,14 @@ const gap = `\b[^\n]{0,120}?\b`
 var mentions = regexp.MustCompile(`(?i)` +
 	`\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `(?:apply|destroy|taint|force-unlock)\b` +
 	`|\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `state` + gap + `(?:rm|mv|push)\b` +
-	`|\b(?:kubectl|kubecolor|oc)` + gap + `(?:delete|drain|replace|taint)\b` +
-	`|\bk[ \t]+(?:delete|drain|replace|taint)\b` +
+	`|\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `workspace` + gap + `delete\b` +
+	`|\b(?:terraform|tofu|terragrunt|tf|tg)` + gap + `init` + gap + `(?:migrate-state|force-copy)\b` +
+	`|\b(?:terraform|tofu|terragrunt)` + gap + `import\b` +
+	`|\b(?:kubectl|kubecolor|oc)` + gap + `(?:delete|drain|replace|taint|exec|attach|debug)\b` +
+	`|\b(?:kubectl|kubecolor|oc)` + gap + `scale` + gap + `replicas[= ]0\b` +
+	`|\b(?:kubectl|kubecolor|oc)` + gap + `apply` + gap + `prune\b` +
+	`|\b(?:kubectl|kubecolor|oc)` + gap + `patch` + gap + `finalizers\b` +
+	`|\bk[ \t]+(?:delete|drain|replace|taint|exec|attach|debug)\b` +
 	`|\bhelm` + gap + `(?:uninstall|delete|rollback|upgrade)\b` +
 	`|\bhelmfile` + gap + `(?:apply|delete|destroy|sync)\b`)
 
@@ -30,33 +36,44 @@ var mentions = regexp.MustCompile(`(?i)` +
 var continuation = strings.NewReplacer("\\\r\n", " ", "\\\n", " ")
 
 // Mention returns the first infrastructure command found in text, skipping
-// comment lines.
+// comment lines. A comment does not continue: bash ignores a backslash ending one,
+// so the next line still runs.
 func Mention(text string) string {
-	text = continuation.Replace(text)
-	sc := bufio.NewScanner(strings.NewReader(text))
-	sc.Buffer(make([]byte, 0, 64*1024), maxBytes+1)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+	var logical strings.Builder
+	for line := range strings.Lines(text) {
+		line = strings.TrimRight(line, "\r\n")
+		if logical.Len() == 0 && isComment(line) {
 			continue
 		}
-		if m := mentions.FindString(line); m != "" {
+		if before, ok := strings.CutSuffix(line, `\`); ok {
+			logical.WriteString(before + " ")
+			continue
+		}
+		logical.WriteString(line)
+		if m := mentions.FindString(logical.String()); m != "" {
 			return m
 		}
+		logical.Reset()
 	}
-	return ""
+	return mentions.FindString(logical.String())
+}
+
+func isComment(line string) bool {
+	line = strings.TrimSpace(line)
+	return strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//")
 }
 
 func read(path string) (string, bool) {
+	// Stat first: opening a FIFO blocks until a writer appears.
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", false
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return "", false
-	}
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
 	if err != nil {
 		return "", false
@@ -88,7 +105,7 @@ type rule struct {
 
 var (
 	ruleLine = regexp.MustCompile(`^([A-Za-z0-9_./%-]+(?:[ \t]+[A-Za-z0-9_./%-]+)*)[ \t]*:([^=].*)?$`)
-	varLine  = regexp.MustCompile(`^[ \t]*([A-Za-z0-9_.]+)[ \t]*[:?+!]?=[ \t]*(.*)$`)
+	varLine  = regexp.MustCompile(`^[ \t]*(?:(?:export|override|private)[ \t]+)*([A-Za-z0-9_.]+)[ \t]*([:?+!]?)=[ \t]*(.*)$`)
 )
 
 type makefileDoc struct {
@@ -97,8 +114,13 @@ type makefileDoc struct {
 	first string
 }
 
-func parseMakefile(text string) makefileDoc {
-	doc := makefileDoc{rules: map[string]*rule{}, vars: map[string]string{}}
+// parseMakefile starts from env because make imports the environment, and a
+// file's plain assignment replaces what it imported while ?= keeps it.
+func parseMakefile(text string, env map[string]string) makefileDoc {
+	doc := makefileDoc{rules: map[string]*rule{}, vars: maps.Clone(env)}
+	if doc.vars == nil {
+		doc.vars = map[string]string{}
+	}
 	var current []*rule
 	for _, line := range strings.Split(continuation.Replace(text), "\n") {
 		if strings.HasPrefix(line, "\t") {
@@ -108,7 +130,7 @@ func parseMakefile(text string) makefileDoc {
 			continue
 		}
 		if m := varLine.FindStringSubmatch(line); m != nil {
-			doc.vars[m[1]] = m[2]
+			doc.assign(m[1], m[2], m[3])
 			current = nil
 			continue
 		}
@@ -141,25 +163,49 @@ func parseMakefile(text string) makefileDoc {
 	return doc
 }
 
-// expand fills in simple variables, since `$(TF) destroy` is how a Makefile
-// usually spells it.
+func (d makefileDoc) assign(name, op, value string) {
+	have, set := d.vars[name]
+	switch {
+	case op == "?" && set:
+	case op == "+" && set:
+		d.vars[name] = have + " " + value
+	default:
+		d.vars[name] = value
+	}
+}
+
+// expand fills in variables, since `$(TF) destroy` is how a Makefile usually spells
+// it. It repeats until nothing changes: one pass over a map resolves a nested
+// variable only when the order happens to suit it, which made the verdict random.
 func (d makefileDoc) expand(line string) string {
-	for name, value := range d.vars {
-		line = strings.ReplaceAll(line, "$("+name+")", value)
-		line = strings.ReplaceAll(line, "${"+name+"}", value)
+	for range len(d.vars) + 1 {
+		before := line
+		for name, value := range d.vars {
+			line = strings.ReplaceAll(line, "$("+name+")", value)
+			line = strings.ReplaceAll(line, "${"+name+"}", value)
+			if len(name) == 1 {
+				line = strings.ReplaceAll(line, "$"+name, value)
+			}
+		}
+		if line == before || len(line) > maxBytes {
+			break
+		}
 	}
 	return line
 }
 
 // Make returns the first infrastructure command the named targets and their
 // prerequisites would run. A target the file does not define may come from an
-// include this does not read, so the whole file is searched instead.
-func Make(dir, file string, targets []string) string {
+// include this does not read, so the whole file is searched instead. env is the
+// environment the command sets, and vars the assignments on make's command line,
+// which outrank the file.
+func Make(dir, file string, targets []string, env, vars map[string]string) string {
 	text, ok := makefile(dir, file)
 	if !ok {
 		return ""
 	}
-	doc := parseMakefile(text)
+	doc := parseMakefile(text, env)
+	maps.Copy(doc.vars, vars)
 	if len(targets) == 0 {
 		goal := doc.vars[".DEFAULT_GOAL"]
 		if goal == "" {

@@ -4,8 +4,12 @@ package engine
 import (
 	"context"
 	"fmt"
+	"maps"
+	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/somaz94/whatdies/internal/kube"
@@ -35,6 +39,10 @@ var quietHeads = map[string]bool{
 	"glab": true, "grep": true, "head": true, "jq": true, "less": true, "ls": true, "man": true,
 	"more": true, "printf": true, "tail": true, "tee": true, "touch": true, "type": true,
 	"wc": true, "whatdies": true, "which": true, "yq": true,
+	// These treat every argument as a name, so terraform/apply is only a directory.
+	"basename": true, "chmod": true, "chown": true, "cp": true, "cut": true, "diff": true, "dirname": true,
+	"du": true, "file": true, "ln": true, "mkdir": true, "mv": true, "readlink": true, "realpath": true,
+	"rm": true, "rmdir": true, "stat": true, "tr": true,
 }
 
 var mutatingWords = map[string]bool{
@@ -111,7 +119,8 @@ func judgeTerraform(ctx context.Context, inv shell.Invocation, earlier []shell.I
 }
 
 func judgeComputedHead(inv shell.Invocation) verdict.Verdict {
-	for name, value := range inv.Env {
+	for _, name := range slices.Sorted(maps.Keys(inv.Env)) {
+		value := inv.Env[name]
 		if !value.Literal {
 			continue
 		}
@@ -197,7 +206,8 @@ func helmDryRun(inv shell.Invocation) bool {
 }
 
 var terraformDestructive = map[string]bool{
-	"apply": true, "destroy": true, "force-unlock": true, "import": true, "refresh": true, "taint": true,
+	"apply": true, "destroy": true, "force-unlock": true, "import": true, "refresh": true, "state": true,
+	"taint": true, "untaint": true, "workspace": true,
 }
 
 func judgeTerraformLike(inv shell.Invocation) verdict.Verdict {
@@ -246,6 +256,7 @@ func judgeMake(inv shell.Invocation) verdict.Verdict {
 	}
 	dir, file := inv.Dir, ""
 	var targets []string
+	vars := map[string]string{}
 	for i := 0; i < len(inv.Args); i++ {
 		a := inv.Args[i]
 		if !a.Literal {
@@ -276,15 +287,53 @@ func judgeMake(inv shell.Invocation) verdict.Verdict {
 			_, file, _ = strings.Cut(v, "=")
 		case strings.HasPrefix(v, "-f") && !strings.HasPrefix(v, "--"):
 			file = v[2:]
-		case strings.HasPrefix(v, "-") || strings.Contains(v, "="):
+		case v == "-j" || v == "--jobs" || v == "-l" || v == "--load-average" || v == "--max-load":
+			// These take a number only if one follows, as in make -j 2 test.
+			if i+1 < len(inv.Args) && isNumber(inv.Args[i+1].Value) {
+				i++
+			}
+		case makeValueFlags[v]:
+			next()
+		case v == "-E" || v == "--eval" || strings.HasPrefix(v, "--eval="):
+			text := strings.TrimPrefix(v, "--eval=")
+			if !strings.HasPrefix(v, "--eval=") {
+				text, _ = next()
+			}
+			if m := script.Mention(text); m != "" {
+				return verdict.AskBecause(fmt.Sprintf("make evaluates text that runs %q", m))
+			}
+		case strings.HasPrefix(v, "-"):
+		case strings.Contains(v, "="):
+			name, value, _ := strings.Cut(v, "=")
+			vars[name] = value
 		default:
 			targets = append(targets, v)
 		}
 	}
-	if m := script.Make(dir, file, targets); m != "" {
+	if m := script.Make(dir, file, targets, literalEnv(inv), vars); m != "" {
 		return verdict.AskBecause(fmt.Sprintf("this make target runs %q", m))
 	}
 	return verdict.Verdict{}
+}
+
+var makeValueFlags = map[string]bool{
+	"-I": true, "--include-dir": true, "-o": true, "--old-file": true, "--assume-old": true,
+	"-W": true, "--what-if": true, "--new-file": true, "--assume-new": true,
+}
+
+func isNumber(s string) bool {
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
+}
+
+func literalEnv(inv shell.Invocation) map[string]string {
+	env := make(map[string]string, len(inv.Env))
+	for k, v := range inv.Env {
+		if v.Literal {
+			env[k] = v.Value
+		}
+	}
+	return env
 }
 
 func resolve(dir, path string) string {
@@ -308,44 +357,58 @@ func judgeScript(inv shell.Invocation, earlier []shell.Invocation) verdict.Verdi
 	if m := script.Mention(strings.Join(inv.Literals()[1:], " ")); m != "" {
 		return verdict.AskBecause(fmt.Sprintf("%s appears to run %q", path, m))
 	}
-	for i := len(earlier) - 1; i >= 0; i-- {
-		if v, written := judgeWritten(path, earlier[i]); written {
-			return v
-		}
+	// A write can be conditional or an append, so it never hides the file on disk.
+	var out verdict.Verdict
+	for _, writer := range earlier {
+		out = verdict.Join(out, judgeWritten(path, writer))
 	}
-	if !inv.DirKnown {
-		return verdict.Verdict{}
+	full, known := scriptPath(inv, path)
+	if !known {
+		return out
 	}
-	if m := script.File(resolve(inv.Dir, path)); m != "" {
-		return verdict.AskBecause(fmt.Sprintf("%s runs %q", path, m))
+	if m := script.File(full); m != "" {
+		out = verdict.Join(out, verdict.AskBecause(fmt.Sprintf("%s runs %q", path, m)))
 	}
-	return verdict.Verdict{}
+	return out
+}
+
+// scriptPath finds a script on disk. A relative path needs a known directory; an
+// absolute one or one under ~/ does not.
+func scriptPath(inv shell.Invocation, path string) (string, bool) {
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		home, err := os.UserHomeDir()
+		return filepath.Join(home, rest), err == nil
+	}
+	if filepath.IsAbs(path) {
+		return path, true
+	}
+	return filepath.Join(inv.Dir, path), inv.DirKnown
 }
 
 // judgeWritten handles a script the same command line creates, which is not on
 // disk yet when the hook runs. Agents do this often with harmless scripts, so
 // text the line itself holds is read rather than refused.
-func judgeWritten(path string, writer shell.Invocation) (verdict.Verdict, bool) {
+func judgeWritten(path string, writer shell.Invocation) verdict.Verdict {
 	redirected := shell.Invocation{Writes: writer.Writes}.NamesFile(path)
 	if !redirected && !(fileWriters[writer.Tool] && writer.ArgNamesFile(path)) {
-		return verdict.Verdict{}, false
+		return verdict.Verdict{}
 	}
 	var text string
 	switch {
 	case !redirected:
-		return verdict.AskBecause(fmt.Sprintf("%s is written by %s just before it runs", path, writer.Tool)), true
+		return verdict.AskBecause(fmt.Sprintf("%s is written by %s just before it runs", path, writer.Tool))
 	case writer.HasHeredoc && writer.HeredocLiteral:
 		text = writer.Heredoc
 	case (writer.Tool == "echo" || writer.Tool == "printf") && len(writer.Literals()) == len(writer.Args):
 		text = strings.Join(writer.Literals(), " ")
 		text = strings.ReplaceAll(text, `\n`, "\n")
 	default:
-		return verdict.AskBecause(fmt.Sprintf("%s is written by %s just before it runs", path, writer.Tool)), true
+		return verdict.AskBecause(fmt.Sprintf("%s is written by %s just before it runs", path, writer.Tool))
 	}
 	if m := script.Mention(text); m != "" {
-		return verdict.AskBecause(fmt.Sprintf("%s runs %q", path, m)), true
+		return verdict.AskBecause(fmt.Sprintf("%s runs %q", path, m))
 	}
-	return verdict.Verdict{}, true
+	return verdict.Verdict{}
 }
 
 func judgeCode(inv shell.Invocation) verdict.Verdict {
@@ -374,14 +437,40 @@ func judgeOther(inv shell.Invocation) verdict.Verdict {
 	return verdict.Verdict{}
 }
 
+// gitConfigRuns are settings whose value git runs as a command.
+var gitConfigRuns = []string{
+	"alias.", "core.askpass=", "core.editor=", "core.fsmonitor=", "core.pager=", "core.sshcommand=",
+	"credential.helper=", "diff.external=", "gpg.program=", "pager.", "sequence.editor=",
+}
+
+// gitEnvRuns are the variables git runs as a command.
+var gitEnvRuns = []string{
+	"GIT_ASKPASS", "GIT_EDITOR", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_SEQUENCE_EDITOR", "GIT_SSH", "GIT_SSH_COMMAND",
+}
+
 // judgeGit stays quiet about commit messages and the like, and looks only where
-// git runs what it is given: aliases, rebase --exec and bisect run.
+// git runs what it is given: settings and variables holding a command, rebase
+// --exec, bisect run and submodule foreach.
 func judgeGit(inv shell.Invocation) verdict.Verdict {
+	for _, name := range gitEnvRuns {
+		if value := inv.Env[name]; value.Literal {
+			if m := script.Mention(value.Value); m != "" {
+				return verdict.AskBecause(fmt.Sprintf("git would run %q", m))
+			}
+		}
+	}
 	words := inv.Literals()
 	runs := false
 	for i, w := range words {
+		next := ""
+		if i+1 < len(words) {
+			next = words[i+1]
+		}
+		lower := strings.ToLower(w)
 		switch {
-		case w == "rebase", w == "bisect" && i+1 < len(words) && words[i+1] == "run", strings.HasPrefix(w, "alias."):
+		case w == "rebase", w == "bisect" && next == "run", w == "submodule" && next == "foreach":
+			runs = true
+		case slices.ContainsFunc(gitConfigRuns, func(key string) bool { return strings.HasPrefix(lower, key) }):
 			runs = true
 		}
 	}
@@ -394,19 +483,30 @@ func judgeGit(inv shell.Invocation) verdict.Verdict {
 	return verdict.Verdict{}
 }
 
-// sedExecute matches the s command's e flag, which runs the result as a command.
-var sedExecute = regexp.MustCompile(`^(?:[0-9,$]*)s(.).*?[a-zA-Z0-9]*e[a-zA-Z0-9]*$`)
+const sedAddress = `(?:[0-9]+|\$|/(?:[^/\\]|\\.)*/)`
+
+// sedExecute matches a sed script using the e command or the s command's e flag,
+// either of which runs text as a command.
+var sedExecute = regexp.MustCompile(`(?:^(?:-e|--expression=)?|[;{\n][ \t]*)` +
+	`(?:` + sedAddress + `(?:,` + sedAddress + `)?!?[ \t]*)?` +
+	`(?:e(?:[ \t]|$)|s[^a-zA-Z0-9 \t\n].*[a-zA-Z0-9]*e[a-zA-Z0-9]*[ \t]*(?:$|[;}\n]))`)
 
 // judgeReader stays quiet about search text, and looks only where sed or rg run
-// what they are given: sed's e flag and rg --pre.
+// what they are given: sed's e command and flag, and rg --pre. A sed word is read
+// alone because the words around it are file names.
 func judgeReader(inv shell.Invocation) verdict.Verdict {
-	runs := false
+	pre := false
 	for _, w := range inv.Literals() {
-		if w == "--pre" || strings.HasPrefix(w, "--pre=") || sedExecute.MatchString(w) {
-			runs = true
+		if w == "--pre" || strings.HasPrefix(w, "--pre=") {
+			pre = true
+		}
+		if sedExecute.MatchString(w) {
+			if m := script.Mention(w); m != "" {
+				return verdict.AskBecause(fmt.Sprintf("%s would run %q", inv.Tool, m))
+			}
 		}
 	}
-	if !runs {
+	if !pre {
 		return verdict.Verdict{}
 	}
 	if m := script.Mention(strings.Join(inv.Literals(), " ")); m != "" {
