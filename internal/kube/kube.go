@@ -18,6 +18,8 @@ type Deps struct {
 	Runner runner.Runner
 	// NoProbe, when set, is why the cluster must not be queried at all.
 	NoProbe string
+	// Getenv reads the environment whatdies runs in; nil means os.Getenv.
+	Getenv func(string) string
 }
 
 // Each probe is bounded on its own as well as by the hook's deadline, because

@@ -61,7 +61,7 @@ func judge(ctx context.Context, inv shell.Invocation, earlier []shell.Invocation
 	case "oc":
 		return kube.Evaluate(ctx, inv, kube.Deps{Runner: d.Runner, NoProbe: "oc is not supported for lookups yet"})
 	case "helm":
-		return judgeHelm(inv)
+		return judgeHelm(ctx, inv, d)
 	case "tofu", "terragrunt":
 		return judgeTerraformLike(inv)
 	case "helmfile":

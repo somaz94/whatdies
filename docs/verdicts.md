@@ -99,7 +99,14 @@ Ask with no lookup: `-f`, `-k`, selectors, `--all`, `--raw`, several types at on
 | `apply --prune`, `apply --force`, `replace --force`, `scale --replicas=0`, a `patch` that touches finalizers or reads a `--patch-file` | Ask |
 | A verb it does not know, such as a plugin | Ask |
 
-`oc` follows the same rules without lookups, and its own read-only verbs such as `status` and `whoami` are no decision. `oc project` and `oc login` stop later `kubectl` lookups, since they share a kubeconfig. Helm and helmfile are decided by verb: `uninstall`, `upgrade`, `rollback`, `helmfile sync` and the like are ask unless `--dry-run` is set.
+`oc` follows the same rules without lookups, and its own read-only verbs such as `status` and `whoami` are no decision. `oc project` and `oc login` stop later `kubectl` lookups, since they share a kubeconfig. `helm upgrade` and helmfile are decided by verb unless `--dry-run` is set: `helm upgrade`, `helmfile sync` and the like are ask, because knowing what an upgrade removes means rendering the new chart, which can download it and run post-renderers and plugins.
+
+| Helm command | Lookup | Verdict |
+|---|---|---|
+| `helm uninstall` | The release's latest revision, then each PVC, PV, namespace, StatefulSet and CRD in its manifest, judged as a `kubectl delete` of it | Any of those that would deny: deny. Otherwise ask, listing what goes, what `helm.sh/resource-policy: keep` keeps, and any delete hooks |
+| `helm rollback` | The current and the target revision, then the same lookups for what the target lacks | Same, except that a keep in the manifest is not trusted, since helm reads it from the live object |
+
+Helm keeps each revision in a Secret of the release's namespace, which `kubectl get secret` reads. Only the manifest, the revision, the status and the hook events are decoded, and from the manifest only each object's kind, name, namespace and resource policy, with lists read item by item as helm does: the same Secret holds the chart and its values, and the manifest holds rendered Secrets. Ask with no lookup: `--kubeconfig` and the other `--kube-*` connection options, any `HELM_DRIVER`, `HELM_NAMESPACE` or `HELM_KUBE*` set on the command, the same variables in the environment except `HELM_DRIVER=secret`, `KUBECONFIG`, `PATH` or `HOME` set on the command, a helm that is not the one on PATH, and the same earlier steps that stop a `kubectl` lookup.
 
 <br/>
 

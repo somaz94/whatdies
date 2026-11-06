@@ -55,7 +55,8 @@ type list struct {
 	Items []object `json:"items"`
 }
 
-func (p *prober) get(ctx context.Context, args ...string) (list, error) {
+// fetch returns kubectl get's raw JSON for callers that decode their own shape (helm Secrets).
+func (p *prober) fetch(ctx context.Context, args ...string) ([]byte, error) {
 	full := make([]string, 0, len(args)+6)
 	if p.context != "" {
 		full = append(full, "--context", p.context)
@@ -63,7 +64,11 @@ func (p *prober) get(ctx context.Context, args ...string) (list, error) {
 	full = append(full, "get")
 	full = append(full, args...)
 	full = append(full, "-o", "json", requestTimeout)
-	out, err := p.run.Run(ctx, runner.Options{}, "kubectl", full...)
+	return p.run.Run(ctx, runner.Options{}, "kubectl", full...)
+}
+
+func (p *prober) get(ctx context.Context, args ...string) (list, error) {
+	out, err := p.fetch(ctx, args...)
 	if err != nil {
 		return list{}, err
 	}

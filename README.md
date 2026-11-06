@@ -69,7 +69,8 @@ Exit codes are `0` no decision, `3` ask, `4` deny.
 | `kubectl delete` of a namespace, PVC or PV | Looks up the volumes behind it | `reclaim=Delete`: **deny**. `Retain` or no volumes: **ask** |
 | `kubectl delete` of a StatefulSet | Reads its PVC retention policy | Claims deleted with it and `reclaim=Delete`: **deny**. Otherwise **ask** |
 | `kubectl delete` of a CRD | Counts its instances | **Ask** |
-| `helm uninstall`, `drain`, `state rm`, `--prune`, `--replicas=0` and similar | The verb alone | **Ask** |
+| `helm uninstall`, `helm rollback` | Reads the release's revisions and looks up the volumes it owns | A volume with `reclaim=Delete` it would remove: **deny**. Otherwise **ask** |
+| `helm upgrade`, `drain`, `state rm`, `--prune`, `--replicas=0` and similar | The verb alone | **Ask** |
 | A command it cannot see into: `eval "$X"`, `curl ... \| bash`, `kubectl delete pod $POD` | The shape of the command | **Ask** |
 
 Commands that are not infrastructure get no decision, in about two milliseconds. The rules, and how each one is decided, are in [docs/verdicts.md](docs/verdicts.md).
@@ -97,12 +98,12 @@ A guard that runs commands on an agent's behalf is itself a risk, so:
 This is a seatbelt for a mistaken agent, not a sandbox. It does not stop an agent trying to get around it.
 
 - **Commands built at run time can get through.** Custom shell functions, a tool name assembled from variables, and scripts more than one level deep are not read. Run an agent you do not trust in a real sandbox.
-- **It covers Terraform, kubectl and, by verb only, Helm.** A direct `aws rds delete-db-instance`, `DROP DATABASE` or `rm -rf` is out of scope. Run a text-matching guard such as [destructive_command_guard](https://github.com/Dicklesworthstone/destructive_command_guard) alongside it. If that guard refuses `terraform plan -destroy`, which whatdies recommends before a destroy, allow it there.
+- **It covers Terraform, kubectl and Helm.** A direct `aws rds delete-db-instance`, `DROP DATABASE` or `rm -rf` is out of scope. Run a text-matching guard such as [destructive_command_guard](https://github.com/Dicklesworthstone/destructive_command_guard) alongside it. If that guard refuses `terraform plan -destroy`, which whatdies recommends before a destroy, allow it there.
 - **MCP tools are not checked.** The hook sees shell commands only.
 - **A plan format whatdies does not know weakens deny to ask.** It decodes the saved plan itself, so no terraform or provider binary runs before you approve. Anything in the file it does not recognise, such as a field a newer Terraform adds, makes the verdict ask rather than a guess.
 - **A plan file can be swapped** between the check and your approval of the prompt.
 - **The list of resource types that hold data is a judgement call.** It lives in [`stateful.yaml`](internal/registry/stateful.yaml), and a type missing from it still gets ask.
-- **Claude Code only so far.** Codex, Gemini CLI, Helm analysis and OpenTofu plans are planned.
+- **Claude Code only so far.** Codex, Gemini CLI, `helm upgrade` analysis and OpenTofu plans are planned.
 
 <br/>
 
