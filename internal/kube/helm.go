@@ -191,6 +191,9 @@ func helmNoProbe(inv shell.Invocation, c helmCommand, d Deps) string {
 	if inv.TargetChange != "" {
 		return "an earlier step (" + inv.TargetChange + ") changes the target first"
 	}
+	if inv.RunAs != "" {
+		return inv.RunAs + " runs it as another user, whose kubeconfig is not this one"
+	}
 	// A context can be an ARN, so it gets kubectl's rule; it is passed as its own argument.
 	if kc := c.value("--kube-context"); strings.HasPrefix(kc, "-") {
 		return "the context looks like an option: " + kc

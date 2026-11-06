@@ -158,8 +158,17 @@ func (p *prober) judgeNamespace(ctx context.Context, ns string) verdict.Verdict 
 	return p.judgeClaims(ctx, "deletes "+where+" with "+contents, claims)
 }
 
+// named adds the namespace when the command or a release set one; otherwise it is
+// the context's default, which a lookup does not learn.
+func (p *prober) named(kind, name string) string {
+	if p.namespace == "" {
+		return kind + " " + name
+	}
+	return fmt.Sprintf("%s %s in namespace %s", kind, name, p.namespace)
+}
+
 func (p *prober) judgePVC(ctx context.Context, name string) verdict.Verdict {
-	where := fmt.Sprintf("PVC %s on %s", name, p.contextLabel(ctx))
+	where := fmt.Sprintf("%s on %s", p.named("PVC", name), p.contextLabel(ctx))
 	objects, err := p.get(ctx, append([]string{"pvc", name}, p.nsArgs()...)...)
 	if err != nil {
 		return verdict.AskBecause(fmt.Sprintf("deletes %s; could not read it: %v", where, err))
@@ -229,7 +238,7 @@ func (p *prober) judgePV(ctx context.Context, name string) verdict.Verdict {
 // judgeStatefulSet separates the two meanings of deleting one: by default the
 // claims outlive it, so it is not data loss unless the set says otherwise.
 func (p *prober) judgeStatefulSet(ctx context.Context, name string, c command) verdict.Verdict {
-	where := fmt.Sprintf("statefulset %s on %s", name, p.contextLabel(ctx))
+	where := fmt.Sprintf("%s on %s", p.named("statefulset", name), p.contextLabel(ctx))
 	if c.value("--cascade") == "orphan" {
 		return verdict.AskBecause("deletes " + where + " but orphans its pods")
 	}

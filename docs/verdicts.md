@@ -39,7 +39,7 @@ echo $(terraform destroy)
 | `eval "$X"`, `bash -c "$X"`, `curl ... \| bash`, `curl ... \| bash -s`, `python3 "$SCRIPT"`, `git rebase -x "$X"`, `$BIN delete ...` | Ask, since the command is not knowable. `source "$F"` is the exception: it stays silent, because `source "$HOME/.nvm/nvm.sh"` is too common to prompt on |
 | `k`, `tf`, `tg`, `kubecolor` | Treated as `kubectl`, `terraform`, `terragrunt` and `kubectl` |
 
-Steps earlier in the same line count. After a computed `cd`, a `cd` that may not have run (`false && cd x; ...`, or inside an `if`), a `kubectl config use-context`, a `terraform workspace select`, an `aws eks update-kubeconfig`, a `source` or an `env -u KUBECONFIG`, what could be looked up now would describe the wrong target, so the verdict is ask with no lookup.
+Steps earlier in the same line count. After a computed `cd`, a `cd` that may not have run (`false && cd x; ...`, or inside an `if`), a `kubectl config use-context`, `set`, `unset` or the like, a `terraform workspace select`, an `aws eks update-kubeconfig`, a `source` or an `env -u KUBECONFIG`, what could be looked up now would describe the wrong target, so the verdict is ask with no lookup. The same holds for a `kubectl` or `helm` run through `sudo` or `doas`, whose kubeconfig belongs to another user.
 
 Lines that only print or define text are skipped when searching a program, so `echo "usage: terraform destroy"` and `alias kd='kubectl delete'` do not ask. `--help` on a tool whatdies knows is no decision, because it prints and exits.
 

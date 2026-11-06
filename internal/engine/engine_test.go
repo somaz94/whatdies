@@ -629,3 +629,26 @@ func TestDefaultUsesTheRealRunner(t *testing.T) {
 		t.Fatal("not the real runner")
 	}
 }
+
+// The lookup would read this user's kubeconfig, not the one the command ends up with.
+func TestOtherUsersAndConfigEditsStopLookups(t *testing.T) {
+	for _, cmd := range []string{
+		`sudo kubectl delete ns x`, `sudo -u ops kubectl delete pvc d -n x`, `doas kubectl delete ns x`,
+		`sudo bash -c 'kubectl delete ns x'`, `sudo helm uninstall r -n x`,
+		`kubectl config set current-context prod && kubectl delete ns x`,
+		`kubectl config set contexts.prod.namespace x; kubectl delete pvc d`,
+		`kubectl config unset current-context && kubectl delete ns x`,
+		`kubectl config set-credentials u --token=t && helm uninstall r`,
+		`kubectl config rename-context a b && kubectl delete ns x`,
+	} {
+		f := &fakeRunner{}
+		v := decide(t, cmd, "/w", f)
+		if v.Decision != verdict.Ask || f.calls != 0 {
+			t.Errorf("%s: %v calls=%d %v", cmd, v.Decision, f.calls, v.Reasons)
+		}
+	}
+	f := &fakeRunner{replies: map[string]string{"get pv v": `{"kind":"PersistentVolume","metadata":{"name":"v"},"spec":{"persistentVolumeReclaimPolicy":"Delete"}}`}}
+	if v := decide(t, `sudo true; kubectl delete pv v`, "/w", f); v.Decision != verdict.Deny {
+		t.Errorf("sudo on an earlier step stops nothing later: %v %v", v.Decision, v.Reasons)
+	}
+}

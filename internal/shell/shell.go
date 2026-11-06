@@ -53,6 +53,9 @@ type Invocation struct {
 	// TargetChange names an earlier step that changes the cluster context or
 	// workspace, which makes anything probed now describe the wrong target.
 	TargetChange string
+	// RunAs names the wrapper, such as sudo, that runs it as another user, whose
+	// kubeconfig and environment are not the ones a probe would read.
+	RunAs string
 	// Writes lists the literal files its output is redirected to.
 	Writes []string
 }
@@ -135,6 +138,7 @@ type analyzer struct {
 	dirKnown     bool
 	env          map[string]Arg
 	targetChange string
+	runAs        string
 }
 
 func (a *analyzer) parse(text string, f flags) {

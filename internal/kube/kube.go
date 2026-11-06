@@ -343,6 +343,9 @@ func noProbe(inv shell.Invocation, c command) string {
 	if inv.TargetChange != "" {
 		return "an earlier step (" + inv.TargetChange + ") changes the target first"
 	}
+	if inv.RunAs != "" {
+		return inv.RunAs + " runs it as another user, whose kubeconfig is not this one"
+	}
 	return ""
 }
 

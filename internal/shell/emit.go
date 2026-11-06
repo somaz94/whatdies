@@ -221,6 +221,7 @@ func (a *analyzer) add(inv Invocation, inline map[string]Arg, in stdin) {
 	inv.Dir, inv.DirKnown = a.dir, a.dirKnown
 	inv.HasHeredoc, inv.HeredocLiteral, inv.Heredoc = in.hasHeredoc, in.heredocLiteral, in.heredoc
 	inv.TargetChange = a.targetChange
+	inv.RunAs = a.runAs
 	inv.Writes = in.writes
 	a.out.Invocations = append(a.out.Invocations, inv)
 }
@@ -249,7 +250,8 @@ func (a *analyzer) noteTargetChange(name string, args []Arg) {
 		if name == "oc" && (has("project") || has("login")) {
 			reason = "oc project or login"
 		}
-		for _, s := range []string{"config use-context", "config use", "config set-context", "config set-cluster"} {
+		for _, s := range []string{"config use-context", "config use", "config set-context", "config set-cluster",
+			"config set", "config unset", "config set-credentials", "config rename-context", "config delete-context"} {
 			if has(s) {
 				reason = name + " " + s
 			}
@@ -317,6 +319,8 @@ func (a *analyzer) unwrap(name string, w wrapper, args []Arg, inline map[string]
 			inline = withEnv(inline, k, Arg{Value: v, Literal: true})
 			i++
 		}
+		defer func(prev string) { a.runAs = prev }(a.runAs)
+		a.runAs = name
 	}
 	a.emit(args[i:], inline, in, f)
 }

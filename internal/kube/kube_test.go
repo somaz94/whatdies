@@ -471,3 +471,16 @@ func TestNamesFromTheClusterAreCheckedBeforeUse(t *testing.T) {
 		}
 	}
 }
+
+func TestLookupLinesNameTheNamespaceTheCommandChose(t *testing.T) {
+	f := &fakeRunner{replies: map[string]string{
+		"get pvc data -n shop": `{"kind":"PersistentVolumeClaim","metadata":{"name":"data"},"spec":{}}`,
+		"get pvc data":         `{"kind":"PersistentVolumeClaim","metadata":{"name":"data"},"spec":{}}`,
+	}}
+	if v := eval(t, `kubectl delete pvc data -n shop`, f); !strings.Contains(reasons(v), "PVC data in namespace shop on kind-test") {
+		t.Errorf("with -n: %s", reasons(v))
+	}
+	if v := eval(t, `kubectl delete pvc data`, f); !strings.Contains(reasons(v), "deletes PVC data on kind-test") {
+		t.Errorf("without -n: %s", reasons(v))
+	}
+}
