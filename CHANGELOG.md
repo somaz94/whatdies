@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.1](https://github.com/somaz94/whatdies/compare/v0.1.0...v0.1.1) (2026-11-06)
+
+### Bug Fixes
+
+- judge git by its subcommand and correct comments left stale by the refactor ([7f67669](https://github.com/somaz94/whatdies/commit/7f676690499fc91f07e32c65c98006a9d4c9075a))
+- close make, heredoc and flag gaps and remove false prompts found re-reviewing the bypass fixes ([6bba3df](https://github.com/somaz94/whatdies/commit/6bba3df74cb253d9380ac7a6d459b7fd1c09940f))
+- refuse settings with data after the JSON object and cover the remaining shell and install branches ([b56af5a](https://github.com/somaz94/whatdies/commit/b56af5a4bd31ba3b3411abc353cd41f32ca08004))
+- name oc in its own reasons and stop lookups after oc project or login ([e7dd7dd](https://github.com/somaz94/whatdies/commit/e7dd7ddbcd5c5f0da4827340632ad296871d51ae))
+- clean every reason in the verdict constructors and ask on a plan change with no actions ([407551a](https://github.com/somaz94/whatdies/commit/407551a4ada2ca4ee5faa08954b9e3f43c6ab0d2))
+- catch destructive commands hidden behind stdin, interpreter flags, script writes and make variables ([151b18b](https://github.com/somaz94/whatdies/commit/151b18b2eed161c325da220187ea7041f30ff3d0))
+- stop the demo deleting a kind cluster it did not create ([b952d89](https://github.com/somaz94/whatdies/commit/b952d891337c677d992967eaa3af5f4020455efc))
+
+### Code Refactoring
+
+- separate plan facts, the hook guard and engine judges ahead of new agents and plan formats ([095711a](https://github.com/somaz94/whatdies/commit/095711af9f986bcb95c67c3792dcaeac864fcfee))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v0.1.0](https://github.com/somaz94/whatdies/releases/tag/v0.1.0) (2026-11-05)
 
 ### Features
