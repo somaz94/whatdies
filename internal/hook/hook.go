@@ -1,9 +1,10 @@
-// Package hook speaks Claude Code's PreToolUse protocol.
+// Package hook speaks the PreToolUse protocol of Claude Code and Codex.
 package hook
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -11,8 +12,8 @@ import (
 	"github.com/somaz94/whatdies/internal/verdict"
 )
 
-// Deadline stays well under the installed hook timeout, so a slow check ends in
-// ask. Reaching that timeout lets the command run unless the entry has onFailure: block.
+// Deadline stays well under the installed hook timeout, so a slow check ends in a
+// decision. Reaching that timeout lets the command run, unless Claude Code's entry has onFailure: block.
 const Deadline = 20 * time.Second
 
 const maxInput = 8 << 20
@@ -41,10 +42,40 @@ type decision struct {
 // Evaluator judges a command line.
 type Evaluator func(ctx context.Context, command, cwd string) verdict.Verdict
 
+// Agent is the coding agent whose hook protocol is spoken.
+type Agent int
+
+// Agents whatdies can be installed into.
+const (
+	Claude Agent = iota
+	Codex
+)
+
+// codexAskAdvice replaces ask, which Codex treats as a failed hook and runs the command.
+const codexAskAdvice = "This needs the user's approval, and a Codex hook cannot ask for it, so it was blocked instead. " +
+	"Do not retry it in another form. Show the user what is listed above and ask them to run it in their own terminal if they want it."
+
+// ErrBlocked follows a Codex deny written to stderr; the caller exits 2. Codex reads
+// stdout as JSON only when nothing precedes it, and a shell startup file can print first.
+var ErrBlocked = errors.New("blocked")
+
 // Run reads one hook event and writes the decision. Any failure to reach a verdict
-// becomes ask, because a clean exit without a decision lets the command run.
-func Run(ctx context.Context, stdin io.Reader, stdout io.Writer, eval Evaluator, deadline time.Duration) error {
-	return write(stdout, decide(ctx, stdin, eval, deadline))
+// becomes ask (deny under Codex), because a clean exit without a decision lets the command run.
+func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, eval Evaluator, deadline time.Duration, agent Agent) error {
+	v := decide(ctx, stdin, eval, deadline)
+	if agent != Codex {
+		return write(stdout, v)
+	}
+	switch v.Decision {
+	case verdict.None:
+		return nil
+	case verdict.Ask:
+		v = verdict.DenyBecause(codexAskAdvice, v.Reasons...)
+	}
+	if _, err := io.WriteString(stderr, v.Message()+"\n"); err != nil {
+		return err
+	}
+	return ErrBlocked
 }
 
 func decide(ctx context.Context, stdin io.Reader, eval Evaluator, deadline time.Duration) verdict.Verdict {

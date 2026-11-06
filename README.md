@@ -29,7 +29,7 @@ DENY
   replaces aws_db_instance.main (aws_db_instance holds data)
 ```
 
-whatdies is a single Go binary that runs as a [Claude Code](https://code.claude.com/docs/en/hooks) `PreToolUse` hook. It needs no API key and sends nothing anywhere: it reads your saved Terraform plan and asks your own `kubectl` read-only questions.
+whatdies is a single Go binary that runs as a `PreToolUse` hook for [Claude Code](https://code.claude.com/docs/en/hooks) or [Codex](https://learn.chatgpt.com/docs/hooks). It needs no API key and sends nothing anywhere: it reads your saved Terraform plan and asks your own `kubectl` read-only questions.
 
 <br/>
 
@@ -47,6 +47,8 @@ whatdies install --claude
 ```
 
 `install` adds one hook to `~/.claude/settings.json`, keeping everything else in the file and a backup beside it. Use `--project` for `./.claude/settings.json`, and `whatdies uninstall --claude` to remove it.
+
+For Codex, `whatdies install --codex` adds it to `~/.codex/hooks.json` (or `$CODEX_HOME`, or `./.codex/hooks.json` with `--project`). Before writing anything, it runs the hook through your shell, plainly and as a login shell, and refuses if a startup file would stop it from blocking. Codex runs a new hook only after you trust it in `/hooks`, and skips it until then; `whatdies uninstall --codex` removes it, and Windows is not supported for Codex yet. A Codex hook cannot ask, since Codex runs a command whose hook answers ask, so there every ask becomes a deny and the agent is told to let you run the command yourself.
 
 If the binary moves or is deleted, every shell command is blocked until you reinstall or remove the hook. That is on purpose: a hook that fails open is not a guard.
 
@@ -103,7 +105,13 @@ This is a seatbelt for a mistaken agent, not a sandbox. It does not stop an agen
 - **A plan format whatdies does not know weakens deny to ask.** It decodes the saved plan itself, so no terraform or provider binary runs before you approve. Anything in the file it does not recognise, such as a field a newer Terraform adds, makes the verdict ask rather than a guess.
 - **A plan file can be swapped** between the check and your approval of the prompt.
 - **The list of resource types that hold data is a judgement call.** It lives in [`stateful.yaml`](internal/registry/stateful.yaml), and a type missing from it still gets ask.
-- **Claude Code only so far.** Codex, Gemini CLI, `helm upgrade` analysis and OpenTofu plans are planned.
+- **Codex gives whatdies less to hold on to.**
+  - A hook that times out lets the command run, since Codex has no setting that blocks on a failed hook. The installed command turns a crash or a missing binary into a block, and whatdies stops itself well before the timeout, but Codex killing it cannot be caught.
+  - Input typed into a session that is already open, such as `bash`, `python3` or `ssh host` started with a terminal, reaches no hook.
+  - The agent can pick the shell a command runs in, which the hook is not told; whatdies reads the command as bash.
+  - In a remote Codex environment the hook still runs on your machine, so plan files and the kube context it reads are local ones.
+  - Another hook that rewrites the command can change it after whatdies has checked it.
+- **Claude Code and Codex only so far.** Gemini CLI, `helm upgrade` analysis and OpenTofu plans are planned. Codex support is checked against Codex's documented hook rules and its source, not yet with a live Codex agent.
 
 <br/>
 

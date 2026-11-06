@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func event(tool, command string) string {
 func run(t *testing.T, in string, eval Evaluator, deadline time.Duration) map[string]string {
 	t.Helper()
 	var out strings.Builder
-	if err := Run(context.Background(), strings.NewReader(in), &out, eval, deadline); err != nil {
+	if err := Run(context.Background(), strings.NewReader(in), &out, io.Discard, eval, deadline, Claude); err != nil {
 		t.Fatal(err)
 	}
 	if out.Len() == 0 {
@@ -129,7 +130,7 @@ func (failingReader) Read([]byte) (int, error) { return 0, errors.New("broken") 
 
 func TestUnreadableStdinIsAsk(t *testing.T) {
 	var out strings.Builder
-	if err := Run(context.Background(), failingReader{}, &out, fixed(verdict.Verdict{}), time.Second); err != nil {
+	if err := Run(context.Background(), failingReader{}, &out, io.Discard, fixed(verdict.Verdict{}), time.Second, Claude); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), `"ask"`) {
@@ -142,8 +143,41 @@ type failingWriter struct{}
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken") }
 
 func TestWriteFailureIsReturned(t *testing.T) {
-	err := Run(context.Background(), strings.NewReader(event("Bash", "x")), failingWriter{}, fixed(verdict.AskBecause("a")), time.Second)
+	err := Run(context.Background(), strings.NewReader(event("Bash", "x")), failingWriter{}, io.Discard, fixed(verdict.AskBecause("a")), time.Second, Claude)
 	if err == nil {
 		t.Fatal("want error, so the installed command exits 2")
+	}
+}
+
+func TestCodexGetsADenyOnStderrOrNothing(t *testing.T) {
+	cases := map[string]struct {
+		in      string
+		eval    Evaluator
+		blocked bool
+		want    string
+	}{
+		"none":       {event("Bash", "ls"), fixed(verdict.Verdict{}), false, ""},
+		"ask":        {event("Bash", "x"), fixed(verdict.AskBecause("why")), true, "a Codex hook cannot ask"},
+		"deny":       {event("Bash", "x"), fixed(verdict.DenyBecause("advice", "why")), true, "advice"},
+		"bad event":  {"nope", fixed(verdict.Verdict{}), true, "could not decode"},
+		"panic":      {event("Bash", "x"), func(context.Context, string, string) verdict.Verdict { panic("boom") }, true, "internal error"},
+		"other tool": {event("apply_patch", "x"), fixed(verdict.DenyBecause("a", "b")), false, ""},
+	}
+	for name, c := range cases {
+		var stdout, stderr strings.Builder
+		err := Run(context.Background(), strings.NewReader(c.in), &stdout, &stderr, c.eval, time.Second, Codex)
+		if stdout.Len() != 0 {
+			t.Errorf("%s: wrote to stdout: %q", name, stdout.String())
+		}
+		if blocked := errors.Is(err, ErrBlocked); blocked != c.blocked || !strings.Contains(stderr.String(), c.want) {
+			t.Errorf("%s: err=%v stderr=%q", name, err, stderr.String())
+		}
+		if c.blocked && !strings.HasPrefix(stderr.String(), "Blocked by the whatdies safety hook") {
+			t.Errorf("%s: stderr does not open with the block: %q", name, stderr.String())
+		}
+	}
+	err := Run(context.Background(), strings.NewReader(event("Bash", "x")), io.Discard, failingWriter{}, fixed(verdict.AskBecause("a")), time.Second, Codex)
+	if err == nil || errors.Is(err, ErrBlocked) {
+		t.Fatalf("a failed write must be an error, not a block: %v", err)
 	}
 }

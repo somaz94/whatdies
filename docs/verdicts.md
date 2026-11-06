@@ -3,7 +3,7 @@
 How whatdies reaches each decision. There are three outcomes, and the strictest one across all the steps of a command line wins:
 
 - **Deny**: the command does not run, and the agent is told what to do instead.
-- **Ask**: Claude Code prompts you. In a headless run (`claude -p`) an ask is refused, with the reason passed to the agent, and that held under `bypassPermissions` too.
+- **Ask**: Claude Code prompts you. Codex cannot ask, so there an ask is sent as a deny (see "When a check fails"). In a headless run (`claude -p`) an ask is refused, with the reason passed to the agent, and that held under `bypassPermissions` too.
 - **No decision**: your normal permission rules apply.
 
 <br/>
@@ -112,12 +112,14 @@ Helm keeps each revision in a Secret of the release's namespace, which `kubectl 
 
 ## When a check fails
 
-Claude Code lets a command run when its hook times out, crashes or cannot start. whatdies closes each of those:
+Claude Code and Codex both let a command run when its hook times out, crashes or cannot start. whatdies closes each of those:
 
 | Failure | Handling |
 |---|---|
 | A lookup hangs | Each probe has a timeout, the whole check has a deadline shorter than the hook's, and the verdict is ask |
 | A lookup fails: no credentials, forbidden, unreachable | Ask, with the error |
 | A bug in whatdies | The panic is recovered, and the verdict is ask |
-| The process dies anyway, or the binary is gone | The installed command ends in `exit 2`, which blocks |
-| The hook itself times out | `onFailure: block` in the installed entry |
+| The process dies anyway, or the binary is gone | The installed command ends in `exit 2` with a reason on stderr, which blocks |
+| The hook itself times out | Claude Code: `onFailure: block` in the installed entry. Codex has no such setting, so the command runs |
+
+Codex blocks only on a deny or on exit 2 with a reason on stderr, and treats every other result, including ask, as a failed hook and runs the command. So under Codex an ask is sent as a deny, and a deny is sent as its reason on stderr with exit 2 rather than as JSON on stdout, which a shell startup file that prints would break. The installed command is run through `/bin/sh` whatever the user's shell is, with nothing in it that fish would read differently, and its timeout is long enough for a slow shell to start. A Codex hook that has not been trusted in `/hooks` is skipped.

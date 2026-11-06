@@ -1,13 +1,15 @@
-// Package install adds and removes the hook in a Claude Code settings file.
+// Package install adds and removes the hook in a Claude Code settings file or a Codex hooks.json.
 package install
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -18,13 +20,28 @@ const (
 	marker  = "# managed by whatdies"
 	matcher = "Bash|Monitor|PowerShell"
 	timeout = 30
+	// codexTimeout leaves room for the user's shell to start, which counts against it,
+	// since a Codex hook that times out lets the command run.
+	codexTimeout = 120
 )
 
-// HookCommand returns the shell command to install. A hook that crashes or whose
+// HookCommand returns the Claude Code command to install. A hook that crashes or whose
 // binary is gone would otherwise let the command run, so failure exits 2.
 func HookCommand(binary string) string {
 	return fmt.Sprintf(`%s hook || { echo 'whatdies hook failed. Reinstall it, or remove its PreToolUse entry from your Claude Code settings.' >&2; exit 2; } %s`,
 		quote(binary), marker)
+}
+
+// CodexHookCommand returns the Codex command, run through /bin/sh whatever the user's
+// shell: Codex blocks only on exit 2 with stderr, and fish reads \' inside single
+// quotes as an escape, so the path may hold no quote, backslash, $ or backtick.
+func CodexHookCommand(binary string) (string, error) {
+	if strings.ContainsAny(binary, "'\"\\$`") {
+		return "", fmt.Errorf("the path %q holds a quote, backslash, $ or backtick, which the Codex hook command cannot carry", binary)
+	}
+	// Exit 2 is whatdies blocking, but the line still goes out: Codex needs stderr.
+	inner := fmt.Sprintf(`"%s" hook --codex || { if [ $? -eq 2 ]; then echo "whatdies: the command did not run." >&2; else echo "whatdies hook failed, so the command was blocked. Reinstall it, or remove its PreToolUse entry from your Codex hooks.json." >&2; fi; exit 2; }`, binary)
+	return "/bin/sh -c '" + inner + "' " + marker, nil
 }
 
 func quote(s string) string {
@@ -290,17 +307,9 @@ func backup(path string) error {
 	return out.Close()
 }
 
-// Install adds the hook to the settings file at path, replacing any earlier one.
+// Install adds the hook to the Claude Code settings file at path, replacing any earlier one.
 func Install(path, binary string) error {
-	top, entries, hooks, err := load(path)
-	if err != nil {
-		return err
-	}
-	entries, _, err = withoutOurs(entries)
-	if err != nil {
-		return err
-	}
-	entry, err := marshal(map[string]any{
+	return add(path, map[string]any{
 		"matcher": matcher,
 		"hooks": []map[string]any{{
 			"type":      "command",
@@ -309,6 +318,36 @@ func Install(path, binary string) error {
 			"onFailure": "block",
 		}},
 	})
+}
+
+// InstallCodex adds the hook to the Codex hooks.json at path, replacing any earlier one.
+// Codex has no onFailure setting: the command itself turns a failure into exit 2.
+func InstallCodex(path, binary string) error {
+	command, err := CodexHookCommand(binary)
+	if err != nil {
+		return err
+	}
+	return add(path, map[string]any{
+		"matcher": "^Bash$",
+		"hooks": []map[string]any{{
+			"type":          "command",
+			"command":       command,
+			"timeout":       codexTimeout,
+			"statusMessage": "whatdies: checking what this command would destroy",
+		}},
+	})
+}
+
+func add(path string, ours map[string]any) error {
+	top, entries, hooks, err := load(path)
+	if err != nil {
+		return err
+	}
+	entries, _, err = withoutOurs(entries)
+	if err != nil {
+		return err
+	}
+	entry, err := marshal(ours)
 	if err != nil {
 		return err
 	}
@@ -326,4 +365,31 @@ func Uninstall(path string) (bool, error) {
 		return false, err
 	}
 	return true, save(path, top, hooks, entries)
+}
+
+// VerifyCodex runs command the way Codex may, with shell both plainly and as a login
+// shell, on a command whatdies always denies. A startup file that exits, swaps the
+// shell or breaks the exit code would make Codex run what the hook meant to stop.
+func VerifyCodex(ctx context.Context, command, shell string) error {
+	event, err := json.Marshal(map[string]any{
+		"hook_event_name": "PreToolUse",
+		"tool_name":       "Bash",
+		"tool_input":      map[string]string{"command": "terraform destroy"},
+		"cwd":             os.TempDir(),
+	})
+	if err != nil {
+		return err
+	}
+	for _, flag := range []string{"-c", "-lc"} {
+		cmd := exec.CommandContext(ctx, shell, flag, command)
+		cmd.Stdin = bytes.NewReader(event)
+		var stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = io.Discard, &stderr
+		err := cmd.Run()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || strings.TrimSpace(stderr.String()) == "" {
+			return fmt.Errorf("under %s %s the hook did not block a command it denies, so Codex would run it", shell, flag)
+		}
+	}
+	return nil
 }

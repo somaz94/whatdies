@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -13,32 +16,43 @@ import (
 
 var (
 	installClaude  bool
+	installCodex   bool
 	installProject bool
 )
 
-func settingsPath() (string, error) {
-	if installProject {
-		return filepath.Join(".claude", "settings.json"), nil
+// verifyCodex is replaced in tests, whose binary is not whatdies.
+var verifyCodex = install.VerifyCodex
+
+func target(adding bool) (codex bool, path string, err error) {
+	switch {
+	case installClaude == installCodex:
+		return false, "", errors.New("name the agent: --claude or --codex")
+	case adding && installCodex && runtime.GOOS == "windows":
+		return false, "", errors.New("on Windows, Codex runs hooks with PowerShell, where whatdies cannot make a failure block yet")
 	}
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
-		return filepath.Join(dir, "settings.json"), nil
+	dir, file, env := ".claude", "settings.json", "CLAUDE_CONFIG_DIR"
+	if installCodex {
+		dir, file, env = ".codex", "hooks.json", "CODEX_HOME"
+	}
+	if installProject {
+		return installCodex, filepath.Join(dir, file), nil
+	}
+	if d := os.Getenv(env); d != "" {
+		return installCodex, filepath.Join(d, file), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return false, "", err
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
+	return installCodex, filepath.Join(home, dir, file), nil
 }
 
 var installCmd = &cobra.Command{
-	Use:   "install --claude",
-	Short: "Add the hook to Claude Code's settings",
+	Use:   "install --claude | --codex",
+	Short: "Add the hook to Claude Code's settings or Codex's hooks.json",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if !installClaude {
-			return errors.New("name the agent: --claude is the one supported so far")
-		}
-		path, err := settingsPath()
+		codex, path, err := target(true)
 		if err != nil {
 			return err
 		}
@@ -46,23 +60,32 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := install.Install(path, binary); err != nil {
+		agent, add := "claude", install.Install
+		if codex {
+			agent, add = "codex", install.InstallCodex
+			if err := checkCodexShell(cmd.Context(), binary); err != nil {
+				return err
+			}
+		}
+		if err := add(path, binary); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Added the whatdies hook to %s\nIf this binary moves or is removed, every shell command is blocked until you reinstall or run: whatdies uninstall --claude\n", path)
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "Added the whatdies hook to %s\n", path)
+		if codex {
+			fmt.Fprintln(out, "Codex runs a new or changed hook only after you trust it: start Codex and review it in /hooks. Until then Codex skips it and warns at startup.")
+		}
+		fmt.Fprintf(out, "If this binary moves or is removed, every shell command is blocked until you reinstall or run: whatdies uninstall --%s\n", agent)
 		return nil
 	},
 }
 
 var uninstallCmd = &cobra.Command{
-	Use:   "uninstall --claude",
-	Short: "Remove the hook from Claude Code's settings",
+	Use:   "uninstall --claude | --codex",
+	Short: "Remove the hook from Claude Code's settings or Codex's hooks.json",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if !installClaude {
-			return errors.New("name the agent: --claude is the one supported so far")
-		}
-		path, err := settingsPath()
+		_, path, err := target(false)
 		if err != nil {
 			return err
 		}
@@ -79,10 +102,30 @@ var uninstallCmd = &cobra.Command{
 	},
 }
 
+// checkCodexShell refuses an install that the user's shell would turn into a hook
+// that never blocks.
+func checkCodexShell(ctx context.Context, binary string) error {
+	command, err := install.CodexHookCommand(binary)
+	if err != nil {
+		return err
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	if err := verifyCodex(ctx, command, shell); err != nil {
+		return fmt.Errorf("not installed: %w. Check your shell's startup files", err)
+	}
+	return nil
+}
+
 func init() {
 	for _, c := range []*cobra.Command{installCmd, uninstallCmd} {
 		c.Flags().BoolVar(&installClaude, "claude", false, "target Claude Code")
-		c.Flags().BoolVar(&installProject, "project", false, "edit ./.claude/settings.json instead of the user settings")
+		c.Flags().BoolVar(&installCodex, "codex", false, "target Codex")
+		c.Flags().BoolVar(&installProject, "project", false, "edit ./.claude/settings.json or ./.codex/hooks.json instead of the user's")
 		rootCmd.AddCommand(c)
 	}
 }
