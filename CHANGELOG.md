@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.3.0](https://github.com/somaz94/whatdies/compare/v0.2.0...v0.3.0) (2026-11-06)
+
+### Features
+
+- colour and wrap check output on a terminal and re-record the demo with it ([d40be95](https://github.com/somaz94/whatdies/commit/d40be95e2166f863af01b3a5ef01e084bf8b172e))
+
+### Bug Fixes
+
+- skip lookups after kubectl config set and under sudo, and name the namespace a lookup used ([4933d7b](https://github.com/somaz94/whatdies/commit/4933d7b56466f472dddd81e09af472008331a897))
+
+### Documentation
+
+- add helm uninstall, Codex block and bucket guard scenes to the demo GIF ([fb434a0](https://github.com/somaz94/whatdies/commit/fb434a02e6622382b88e787f937a8afa53fa06da))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v0.2.0](https://github.com/somaz94/whatdies/compare/v0.1.1...v0.2.0) (2026-11-06)
 
 ### Features
