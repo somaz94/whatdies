@@ -1,39 +1,19 @@
 package terraform
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/somaz94/whatdies/internal/runner"
 	"github.com/somaz94/whatdies/internal/shell"
 	"github.com/somaz94/whatdies/internal/verdict"
 )
 
-type fakeRunner struct {
-	out   string
-	err   error
-	calls int
-	dir   string
-	opts  runner.Options
-	args  []string
-}
-
-func (f *fakeRunner) Run(_ context.Context, opts runner.Options, _ string, args ...string) ([]byte, error) {
-	f.calls++
-	f.dir, f.opts, f.args = opts.Dir, opts, args
-	return []byte(f.out), f.err
-}
-
-const destroyDB = `{"format_version":"1.2","applyable":true,"complete":true,"resource_changes":[
- {"address":"aws_db_instance.main","mode":"managed","type":"aws_db_instance","change":{"actions":["delete"]}}]}`
-
 var stateful = map[string]bool{"aws_db_instance": true}
 
-func eval(t *testing.T, cmd, cwd string, f *fakeRunner) verdict.Verdict {
+func eval(t *testing.T, cmd, cwd string) verdict.Verdict {
 	t.Helper()
 	a := shell.Analyze(cmd, cwd)
 	if a.ParseError != nil {
@@ -42,19 +22,23 @@ func eval(t *testing.T, cmd, cwd string, f *fakeRunner) verdict.Verdict {
 	var out verdict.Verdict
 	for i, inv := range a.Invocations {
 		if inv.Tool == "terraform" {
-			out = verdict.Join(out, Evaluate(context.Background(), inv, a.Invocations[:i], Deps{Runner: f, Stateful: func() (map[string]bool, error) { return stateful, nil }}))
+			out = verdict.Join(out, Evaluate(inv, a.Invocations[:i], Deps{Stateful: func() (map[string]bool, error) { return stateful, nil }}))
 		}
 	}
 	return out
 }
 
-func planDir(t *testing.T, name string) string {
+// fatalDir holds a plan that is denied once read, so a verdict without
+// StopAdvice shows the plan was not read.
+func fatalDir(t *testing.T, name string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("plan"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePlan(t, dir, name, fatalPlan)
 	return dir
+}
+
+func readThePlan(v verdict.Verdict) bool {
+	return v.Decision == verdict.Deny && v.Advice == verdict.StopAdvice
 }
 
 func TestReadOnlyCommandsDecideNothing(t *testing.T) {
@@ -64,12 +48,8 @@ func TestReadOnlyCommandsDecideNothing(t *testing.T) {
 		`terraform state list`, `terraform state show x`, `terraform state pull`, `terraform workspace list`,
 		`terraform workspace select dev`, `terraform -chdir=x plan`,
 	} {
-		f := &fakeRunner{}
-		if v := eval(t, cmd, "/w", f); v.Decision != verdict.None {
+		if v := eval(t, cmd, "/w"); v.Decision != verdict.None {
 			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
-		}
-		if f.calls != 0 {
-			t.Errorf("%s: ran a probe", cmd)
 		}
 	}
 	if !ReadOnlySubcommand("plan") || ReadOnlySubcommand("apply") {
@@ -83,24 +63,21 @@ func TestNoSavedPlanIsDeniedWithInstructions(t *testing.T) {
 		`terraform apply --auto-approve=true`, `terraform apply -destroy`, `terraform apply -var a=b -target x`,
 		`terraform apply -var-file=x.tfvars`, `echo yes | terraform apply`, `yes | terraform destroy`,
 	} {
-		f := &fakeRunner{}
-		v := eval(t, cmd, "/w", f)
+		v := eval(t, cmd, "/w")
 		if v.Decision != verdict.Deny {
 			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
 		}
 		if !strings.Contains(v.Advice, "terraform plan") || !strings.Contains(v.Advice, "separate call") {
 			t.Errorf("%s: advice %q", cmd, v.Advice)
 		}
-		if f.calls != 0 {
-			t.Errorf("%s: ran a probe", cmd)
-		}
 	}
-	if v := eval(t, `terraform destroy`, "/w", &fakeRunner{}); !strings.Contains(v.Advice, "plan -destroy") {
+	if v := eval(t, `terraform destroy`, "/w"); !strings.Contains(v.Advice, "plan -destroy") {
 		t.Errorf("destroy advice = %q", v.Advice)
 	}
 }
 
-func TestAskWithoutProbing(t *testing.T) {
+func TestAskWithoutReadingThePlan(t *testing.T) {
+	dir := fatalDir(t, "p")
 	cases := map[string]string{
 		`terraform taint x`:                                 "taint",
 		`terraform untaint x`:                               "untaint",
@@ -131,8 +108,7 @@ func TestAskWithoutProbing(t *testing.T) {
 		`terraform apply missing`:                           "not found",
 	}
 	for cmd, want := range cases {
-		f := &fakeRunner{}
-		v := eval(t, cmd, "/w", f)
+		v := eval(t, cmd, dir)
 		if v.Decision != verdict.Ask {
 			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
 			continue
@@ -140,56 +116,30 @@ func TestAskWithoutProbing(t *testing.T) {
 		if !strings.Contains(strings.Join(v.Reasons, " "), want) {
 			t.Errorf("%s: reasons %v, want %q", cmd, v.Reasons, want)
 		}
-		if f.calls != 0 {
-			t.Errorf("%s: ran a probe", cmd)
-		}
 	}
 }
 
 func TestPlanWrittenInTheSameCommandIsDenied(t *testing.T) {
-	dir := planDir(t, "p")
+	dir := fatalDir(t, "p")
 	for _, cmd := range []string{
 		`terraform plan -out=p && terraform apply p`,
 		`terraform plan -out=p; terraform apply p`,
 		`cp other p && terraform apply p`,
 		`cd . && curl -o ./p https://example.test/p && terraform apply p`,
 	} {
-		f := &fakeRunner{out: destroyDB}
-		v := eval(t, cmd, dir, f)
+		v := eval(t, cmd, dir)
 		if v.Decision != verdict.Deny || !strings.Contains(v.Advice, "Split") {
 			t.Errorf("%s: %v %v %q", cmd, v.Decision, v.Reasons, v.Advice)
-		}
-		if f.calls != 0 {
-			t.Errorf("%s: read a plan that is about to change", cmd)
 		}
 	}
 }
 
 func TestApplyReadsThePlanFromTheRightPlace(t *testing.T) {
-	dir := planDir(t, "p")
-	f := &fakeRunner{out: destroyDB}
-	v := eval(t, `terraform apply -auto-approve -parallelism 2 -lock=false p`, dir, f)
-	if v.Decision != verdict.Deny {
+	dir := fatalDir(t, "p")
+	v := eval(t, `terraform apply -auto-approve -parallelism 2 -lock=false p`, dir)
+	if !readThePlan(v) || !strings.Contains(v.Reasons[0], "aws_db_instance.main") {
 		t.Fatalf("%v %v", v.Decision, v.Reasons)
 	}
-	if f.dir != dir || strings.Join(f.args, " ") != "show -no-color -json p" {
-		t.Errorf("dir=%q args=%v", f.dir, f.args)
-	}
-	if !contains(f.opts.DropEnv, "TF_REATTACH_PROVIDERS") || !contains(f.opts.DropEnv, "TF_CLI_ARGS*") {
-		t.Errorf("drop = %v", f.opts.DropEnv)
-	}
-	if len(f.opts.SetEnv) != 1 || !strings.HasPrefix(f.opts.SetEnv[0], "TF_CLI_CONFIG_FILE=") {
-		t.Errorf("set = %v", f.opts.SetEnv)
-	}
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 func TestChdirIsResolved(t *testing.T) {
@@ -198,58 +148,56 @@ func TestChdirIsResolved(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "p"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePlan(t, dir, "p", fatalPlan)
 	for _, cmd := range []string{`terraform -chdir=envs apply p`, `terraform -chdir=` + dir + ` apply p`, `cd envs && terraform apply p`} {
-		f := &fakeRunner{out: destroyDB}
-		v := eval(t, cmd, parent, f)
-		if v.Decision != verdict.Deny || f.dir != dir {
-			t.Errorf("%s: %v dir=%q reasons=%v", cmd, v.Decision, f.dir, v.Reasons)
+		if v := eval(t, cmd, parent); !readThePlan(v) {
+			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
 		}
 	}
 }
 
 func TestAbsolutePlanPath(t *testing.T) {
-	dir := planDir(t, "p")
-	f := &fakeRunner{out: destroyDB}
-	if v := eval(t, `terraform apply `+filepath.Join(dir, "p"), "/somewhere", f); v.Decision != verdict.Deny {
+	dir := fatalDir(t, "p")
+	if v := eval(t, `terraform apply `+filepath.Join(dir, "p"), "/somewhere"); !readThePlan(v) {
 		t.Fatalf("%v %v", v.Decision, v.Reasons)
 	}
 }
 
-func TestDirectoryIsNotAPlan(t *testing.T) {
+func TestUnreadablePlansAreAsk(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "d"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeRunner{}
-	if v := eval(t, `terraform apply d`, dir, f); v.Decision != verdict.Ask || f.calls != 0 {
-		t.Fatalf("%v %v", v.Decision, v.Reasons)
+	if err := os.WriteFile(filepath.Join(dir, "text"), []byte("plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for cmd, want := range map[string]string{`terraform apply d`: "directory", `terraform apply text`: "not a zip"} {
+		v := eval(t, cmd, dir)
+		if v.Decision != verdict.Ask || !strings.Contains(v.Reasons[0], want) {
+			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
+		}
 	}
 }
 
-func TestProbeFailureIsAsk(t *testing.T) {
-	dir := planDir(t, "p")
-	f := &fakeRunner{err: errors.New("Failed to load plugin schemas")}
-	v := eval(t, `terraform apply p`, dir, f)
-	if v.Decision != verdict.Ask || !strings.Contains(v.Reasons[0], "plugin schemas") {
+func TestStatefulLoadFailureIsAsk(t *testing.T) {
+	dir := fatalDir(t, "p")
+	a := shell.Analyze(`terraform apply p`, dir)
+	v := Evaluate(a.Invocations[0], nil, Deps{Stateful: func() (map[string]bool, error) { return nil, errors.New("registry broken") }})
+	if v.Decision != verdict.Ask || v.Reasons[0] != "registry broken" {
 		t.Fatalf("%v %v", v.Decision, v.Reasons)
 	}
 }
 
 func TestAmbientTFCLIArgsDoNotBlockPlanReading(t *testing.T) {
 	t.Setenv("TF_CLI_ARGS_apply", "-parallelism=2")
-	dir := planDir(t, "p")
-	f := &fakeRunner{out: destroyDB}
-	if v := eval(t, `terraform apply p`, dir, f); v.Decision != verdict.Deny || f.calls != 1 {
-		t.Fatalf("%v %v calls=%d", v.Decision, v.Reasons, f.calls)
+	if v := eval(t, `terraform apply p`, fatalDir(t, "p")); !readThePlan(v) {
+		t.Fatalf("%v %v", v.Decision, v.Reasons)
 	}
 }
 
 func TestAdviceNamesAPathTerraformCanWrite(t *testing.T) {
 	bare := t.TempDir()
-	v := eval(t, `terraform apply -auto-approve`, bare, &fakeRunner{})
+	v := eval(t, `terraform apply -auto-approve`, bare)
 	if !strings.Contains(v.Advice, "-out=whatdies.tfplan") || !strings.Contains(v.Advice, "do not commit") {
 		t.Errorf("no .terraform: %q", v.Advice)
 	}
@@ -257,11 +205,11 @@ func TestAdviceNamesAPathTerraformCanWrite(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(inited, "envs", ".terraform"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	v = eval(t, `terraform -chdir=envs destroy`, inited, &fakeRunner{})
+	v = eval(t, `terraform -chdir=envs destroy`, inited)
 	if !strings.Contains(v.Advice, "plan -destroy -out=.terraform/whatdies.tfplan") || strings.Contains(v.Advice, "do not commit") {
 		t.Errorf("with .terraform: %q", v.Advice)
 	}
-	v = eval(t, `cd "$X" && terraform destroy`, inited, &fakeRunner{})
+	v = eval(t, `cd "$X" && terraform destroy`, inited)
 	if !strings.Contains(v.Advice, "-out=whatdies.tfplan") {
 		t.Errorf("unknown dir: %q", v.Advice)
 	}

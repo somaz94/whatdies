@@ -2,7 +2,6 @@
 package terraform
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/somaz94/whatdies/internal/runner"
 	"github.com/somaz94/whatdies/internal/shell"
 	"github.com/somaz94/whatdies/internal/verdict"
 )
@@ -40,7 +38,6 @@ func resolve(dir, path string) string {
 
 // Deps are the outside inputs of a verdict.
 type Deps struct {
-	Runner runner.Runner
 	// Stateful returns the set of resource types whose deletion loses data. It is a
 	// function so that the many terraform commands that read no plan do not parse it.
 	Stateful func() (map[string]bool, error)
@@ -57,7 +54,7 @@ func ReadOnlySubcommand(sub string) bool { return readOnly[sub] }
 
 // Evaluate judges one terraform invocation. earlier holds the invocations that
 // run before it in the same command line.
-func Evaluate(ctx context.Context, inv shell.Invocation, earlier []shell.Invocation, d Deps) verdict.Verdict {
+func Evaluate(inv shell.Invocation, earlier []shell.Invocation, d Deps) verdict.Verdict {
 	sub, rest, chdir, problem := parseGlobal(inv.Args)
 	if problem != "" {
 		return verdict.AskBecause("terraform: " + problem)
@@ -79,7 +76,7 @@ func Evaluate(ctx context.Context, inv shell.Invocation, earlier []shell.Invocat
 	case sub == "destroy":
 		return noSavedPlan(inv, chdir, "terraform destroy", "terraform plan -destroy")
 	case sub == "apply":
-		return evaluateApply(ctx, inv, rest, chdir, earlier, d)
+		return evaluateApply(inv, rest, chdir, earlier, d)
 	}
 	return verdict.AskBecause(fmt.Sprintf("terraform %s can change state or infrastructure", sub))
 }
@@ -161,7 +158,7 @@ var applyBoolFlags = map[string]bool{
 	"lock": true, "no-color": true, "refresh": true, "refresh-only": true,
 }
 
-func evaluateApply(ctx context.Context, inv shell.Invocation, args []shell.Arg, chdir string, earlier []shell.Invocation, d Deps) verdict.Verdict {
+func evaluateApply(inv shell.Invocation, args []shell.Arg, chdir string, earlier []shell.Invocation, d Deps) verdict.Verdict {
 	var positional []shell.Arg
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -204,7 +201,7 @@ func evaluateApply(ctx context.Context, inv shell.Invocation, args []shell.Arg, 
 		return verdict.AskBecause("an earlier step (" + inv.TargetChange + ") changes the target before this apply")
 	}
 	if !inv.Bare {
-		return verdict.AskBecause("this is not the plain terraform on PATH, so whatdies will not run it to read the plan")
+		return verdict.AskBecause("this is not the plain terraform on PATH, which may read the plan differently")
 	}
 	if !inv.DirKnown {
 		return verdict.AskBecause("the working directory is computed at run time, so the plan file cannot be found")
@@ -212,7 +209,7 @@ func evaluateApply(ctx context.Context, inv shell.Invocation, args []shell.Arg, 
 	if strings.HasPrefix(plan, "-") {
 		return verdict.AskBecause("the plan file name looks like an option")
 	}
-	return readPlan(ctx, resolve(inv.Dir, chdir), plan, d)
+	return readPlan(resolve(inv.Dir, chdir), plan, d)
 }
 
 // envOverride finds variables the command itself sets that change terraform's
@@ -258,32 +255,14 @@ func writesPlan(plan string, earlier []shell.Invocation) string {
 	return ""
 }
 
-func readPlan(ctx context.Context, dir, plan string, d Deps) verdict.Verdict {
-	full := plan
-	if !filepath.IsAbs(full) {
-		full = filepath.Join(dir, plan)
-	}
-	info, err := os.Stat(full)
-	if err != nil {
-		return verdict.AskBecause(fmt.Sprintf("plan file %q was not found", plan))
-	}
-	if info.IsDir() {
-		return verdict.AskBecause(fmt.Sprintf("%q is a directory, not a plan file", plan))
-	}
-	// A CLI config can point provider lookups elsewhere with dev_overrides, and
-	// a reattach variable can hand the schema request to a running process.
-	opts := runner.Options{
-		Dir:     dir,
-		DropEnv: []string{"TF_REATTACH_PROVIDERS", "TF_CLI_ARGS*"},
-		SetEnv:  []string{"TF_CLI_CONFIG_FILE=" + os.DevNull},
-	}
-	out, err := d.Runner.Run(ctx, opts, "terraform", "show", "-no-color", "-json", plan)
-	if err != nil {
-		return verdict.AskBecause(fmt.Sprintf("could not read plan %q: %v", plan, err))
+func readPlan(dir, plan string, d Deps) verdict.Verdict {
+	facts, problem := readPlanFile(resolve(dir, plan))
+	if problem != "" {
+		return verdict.AskBecause(fmt.Sprintf("could not read plan %q: %s", plan, problem))
 	}
 	stateful, err := d.Stateful()
 	if err != nil {
 		return verdict.AskBecause(err.Error())
 	}
-	return JudgePlan(out, stateful)
+	return judgeFacts(facts, stateful)
 }

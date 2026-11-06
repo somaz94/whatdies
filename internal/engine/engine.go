@@ -55,7 +55,7 @@ func judge(ctx context.Context, inv shell.Invocation, earlier []shell.Invocation
 	case "":
 		return judgeComputedHead(inv)
 	case "terraform":
-		return judgeTerraform(ctx, inv, earlier, d)
+		return judgeTerraform(inv, earlier, d)
 	case "kubectl":
 		return kube.Evaluate(ctx, inv, kube.Deps{Runner: d.Runner})
 	case "oc":
@@ -99,8 +99,8 @@ func asksForHelp(inv shell.Invocation) bool {
 	return false
 }
 
-func judgeTerraform(ctx context.Context, inv shell.Invocation, earlier []shell.Invocation, d Deps) verdict.Verdict {
-	return terraform.Evaluate(ctx, inv, earlier, terraform.Deps{Runner: d.Runner, Stateful: d.stateful})
+func judgeTerraform(inv shell.Invocation, earlier []shell.Invocation, d Deps) verdict.Verdict {
+	return terraform.Evaluate(inv, earlier, terraform.Deps{Stateful: d.stateful})
 }
 
 func (d Deps) stateful() (map[string]bool, error) {

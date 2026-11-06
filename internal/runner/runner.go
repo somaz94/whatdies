@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -19,15 +18,10 @@ type Runner interface {
 // Options adjusts one run.
 type Options struct {
 	Dir string
-	// DropEnv removes variables by exact name, or by prefix when ending in "*".
-	DropEnv []string
-	// SetEnv adds variables after DropEnv is applied.
-	SetEnv []string
 }
 
-// maxOutput bounds a probe's stdout. A terraform plan JSON for a large
-// configuration runs to tens of megabytes; beyond this the verdict falls back
-// to ask rather than exhausting memory on every hook call.
+// maxOutput bounds a probe's stdout; beyond it the verdict falls back to ask
+// rather than exhausting memory on every hook call.
 const maxOutput = 256 << 20
 
 // Exec is the real Runner.
@@ -38,7 +32,6 @@ type Exec struct{}
 func (Exec) Run(ctx context.Context, opts Options, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = opts.Dir
-	cmd.Env = buildEnv(os.Environ(), opts)
 	var stdout limitedBuffer
 	var stderr limitedBuffer
 	stdout.limit, stderr.limit = maxOutput, 1<<16
@@ -58,37 +51,10 @@ func (Exec) Run(ctx context.Context, opts Options, name string, args ...string) 
 	return stdout.Bytes(), nil
 }
 
-func buildEnv(base []string, opts Options) []string {
-	env := make([]string, 0, len(base)+len(opts.SetEnv))
-	for _, kv := range base {
-		name, _, _ := strings.Cut(kv, "=")
-		if !dropped(name, opts.DropEnv) {
-			env = append(env, kv)
-		}
-	}
-	return append(env, opts.SetEnv...)
-}
-
-func dropped(name string, patterns []string) bool {
-	for _, p := range patterns {
-		if prefix, ok := strings.CutSuffix(p, "*"); ok {
-			if strings.HasPrefix(name, prefix) {
-				return true
-			}
-		} else if name == p {
-			return true
-		}
-	}
-	return false
-}
-
-// firstLine keeps probe errors to one line; terraform frames its errors in
-// box-drawing and colour codes, and the reason is read inline by an agent.
+// firstLine keeps probe errors to one line, since an agent reads the reason inline.
 func firstLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSpace(stripANSI(line))
-		line = strings.TrimLeft(line, "│╷╵ ")
-		if line != "" {
+		if line = strings.TrimSpace(stripANSI(line)); line != "" {
 			return line
 		}
 	}

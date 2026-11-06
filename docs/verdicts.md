@@ -60,15 +60,17 @@ Saving a plan is the only way to know what an apply does, so everything turns on
 | `TF_CLI_ARGS*`, `TF_WORKSPACE` or `TF_DATA_DIR` set by the command itself | Ask. The same variables in your own environment are ignored, since they cannot change what a saved plan does |
 | `tofu`, `terragrunt` | Read-only commands pass, and anything else is ask. Their plans are not read yet |
 
-From the plan's `resource_changes`:
+whatdies reads the saved plan file itself rather than running `terraform show`, so nothing in the working directory runs before you approve. From its list of changes:
 
 | `change.actions` | Resource type in [`stateful.yaml`](../internal/registry/stateful.yaml) | Any other type |
 |---|---|---|
 | `delete`, or `delete` with `create` | Deny | Ask |
-| `forget`, a value whatdies does not know, or no actions at all | Ask | Ask |
+| `forget` | Ask | Ask |
 | `create`, `update`, `read`, `no-op` | No decision | No decision |
 
-Also ask: an errored plan, a partial plan (`complete: false`), provider actions, deferred changes, and provisioners when anything changes, since none of those are described by the change list. `resource_drift` and `output_changes` are ignored, because they describe the past and outputs.
+Also ask: an errored plan, a plan not marked complete (one saved with `-target` is not), provider actions, and provisioners when anything changes, since none of those are described by the change list. Provisioners are found by searching the configuration saved inside the plan, so one that is only mentioned in a comment counts too. Drift and output changes are ignored, because they describe the past and outputs.
+
+Anything in the plan file that whatdies does not recognise is ask: a format version, a section such as deferred changes, an action, or a resource address it cannot read. So is a plan with more changes than it will read. A newer Terraform can therefore weaken a deny to ask, but never to no decision.
 
 An in-place `update` is not treated as destructive, even one that sets `force_destroy = true` so that a later destroy loses data.
 

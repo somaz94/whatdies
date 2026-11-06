@@ -16,28 +16,21 @@ func TestRunReturnsStdout(t *testing.T) {
 	}
 }
 
-func TestRunUsesDirAndEnvRules(t *testing.T) {
+func TestRunUsesDir(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("WHATDIES_TEST_DROP", "x")
-	t.Setenv("WHATDIES_PREFIX_A", "x")
-	opts := Options{Dir: dir, DropEnv: []string{"WHATDIES_TEST_DROP", "WHATDIES_PREFIX_*"}, SetEnv: []string{"WHATDIES_SET=1"}}
-	out, err := Exec{}.Run(context.Background(), opts, "sh", "-c", `pwd; printf "%s,%s,%s" "$WHATDIES_TEST_DROP" "$WHATDIES_PREFIX_A" "$WHATDIES_SET"`)
+	out, err := Exec{}.Run(context.Background(), Options{Dir: dir}, "sh", "-c", "pwd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	real, _ := filepath.EvalSymlinks(dir)
-	lines := strings.Split(string(out), "\n")
-	if lines[0] != real && lines[0] != dir {
-		t.Errorf("pwd = %q, want %q", lines[0], dir)
-	}
-	if lines[1] != ",,1" {
-		t.Errorf("env = %q", lines[1])
+	if got := strings.TrimSpace(string(out)); got != real && got != dir {
+		t.Errorf("pwd = %q, want %q", got, dir)
 	}
 }
 
 func TestRunReportsTheFirstStderrLine(t *testing.T) {
-	_, err := Exec{}.Run(context.Background(), Options{}, "sh", "-c", `printf '\033[31m│\033[0m\n│ Error: boom\nmore\n' >&2; exit 3`)
-	if err == nil || !strings.Contains(err.Error(), "Error: boom") || strings.Contains(err.Error(), "more") {
+	_, err := Exec{}.Run(context.Background(), Options{}, "sh", "-c", `printf '\033[31m\033[0m\n  error: boom\nmore\n' >&2; exit 3`)
+	if err == nil || !strings.Contains(err.Error(), "error: boom") || strings.Contains(err.Error(), "more") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -74,8 +67,8 @@ func TestLimitedBufferReportsOverflow(t *testing.T) {
 	}
 }
 
-func TestFirstLineSkipsDecoration(t *testing.T) {
-	if got := firstLine("╷\n│ \n│ Error: x\n"); got != "Error: x" {
+func TestFirstLineSkipsBlankAndColourOnlyLines(t *testing.T) {
+	if got := firstLine("\n\x1b[0m \n  error: x\n"); got != "error: x" {
 		t.Fatalf("got %q", got)
 	}
 	if got := firstLine(""); got != "" {

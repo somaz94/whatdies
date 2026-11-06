@@ -421,30 +421,40 @@ func TestLookupsStopAfterUnset(t *testing.T) {
 	}
 }
 
+// destroyPlan is a plan terraform wrote that deletes terraform_data resources,
+// which ExtraStateful turns into data-holding ones.
+func destroyPlan(t *testing.T, dir, name string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "terraform", "testdata", "plans", "destroy.tfplan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+var dataHolding = Deps{Runner: &fakeRunner{}, ExtraStateful: []string{"terraform_data"}}
+
 func TestPlanDirectoryAmbiguity(t *testing.T) {
 	dir := t.TempDir()
-	write(t, dir, "p", "plan")
+	destroyPlan(t, dir, "p")
 	if err := os.Mkdir(filepath.Join(dir, "safe"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(dir, "safe"), "p", "plan")
-	fatal := `{"format_version":"1.2","resource_changes":[{"address":"aws_db_instance.m","mode":"managed","type":"aws_db_instance","change":{"actions":["delete"]}}]}`
+	destroyPlan(t, filepath.Join(dir, "safe"), "p")
+	// Both plans deny once read, so ask shows neither was read.
 	for _, cmd := range []string{
 		`false && cd safe; terraform apply p`, `if false; then cd safe; fi; terraform apply p`, `f() { cd safe; }; terraform apply p`,
 		`false || cd safe; terraform apply p`, `for x in 1; do cd safe; done; terraform apply p`, `case a in a) cd safe;; esac; terraform apply p`,
 		`env --chdir=safe terraform apply p`, `env -Csafe terraform apply p`, `sudo -D safe terraform apply p`,
 	} {
-		f := &fakeRunner{replies: map[string]string{"show -no-color -json p": fatal}}
-		if v := decide(t, cmd, dir, f); v.Decision == verdict.None {
-			t.Errorf("%s: no decision", cmd)
-		}
-		if f.calls != 0 {
-			t.Errorf("%s: read a plan from a directory it cannot be sure of", cmd)
+		if v := Evaluate(context.Background(), cmd, dir, dataHolding); v.Decision != verdict.Ask {
+			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
 		}
 	}
 	for _, cmd := range []string{`cd safe && terraform apply p`, `true && cd safe && terraform apply p`, `cd safe || exit 1; terraform apply p`, `cd a && cd ../safe && terraform apply p`} {
-		f := &fakeRunner{replies: map[string]string{"show -no-color -json p": fatal}}
-		if v := decide(t, cmd, dir, f); v.Decision != verdict.Deny {
+		if v := Evaluate(context.Background(), cmd, dir, dataHolding); v.Decision != verdict.Deny {
 			t.Errorf("%s: %v %v", cmd, v.Decision, v.Reasons)
 		}
 	}
@@ -458,14 +468,12 @@ func TestPlanFileOverwrittenEarlierInTheLine(t *testing.T) {
 		`curl --output=q https://example.test/x && terraform apply q`, `terragrunt plan -out=q && terraform apply q`,
 		`curl -oq https://example.test/x && terraform apply q`,
 	} {
-		f := &fakeRunner{}
-		if v := decide(t, cmd, dir, f); v.Decision != verdict.Deny || f.calls != 0 {
-			t.Errorf("%s: %v calls=%d", cmd, v.Decision, f.calls)
+		if v := decide(t, cmd, dir, nil); v.Decision != verdict.Deny || !strings.Contains(v.Advice, "Split") {
+			t.Errorf("%s: %v %q", cmd, v.Decision, v.Advice)
 		}
 	}
 	for _, cmd := range []string{`ls q && terraform apply q`, `terraform show q && terraform apply q`} {
-		f := &fakeRunner{}
-		if v := decide(t, cmd, dir, f); v.Decision == verdict.Deny {
+		if v := decide(t, cmd, dir, nil); v.Decision == verdict.Deny {
 			t.Errorf("%s: a read does not change the plan: %v", cmd, v.Reasons)
 		}
 	}
@@ -567,14 +575,11 @@ func TestMakeTargets(t *testing.T) {
 
 func TestExtraStatefulOnlyTightens(t *testing.T) {
 	dir := t.TempDir()
-	write(t, dir, "p", "plan")
-	plan := `{"format_version":"1.2","resource_changes":[{"address":"terraform_data.db","mode":"managed","type":"terraform_data","change":{"actions":["delete"]}}]}`
-	f := &fakeRunner{replies: map[string]string{"show -no-color -json p": plan}}
-	if v := Evaluate(context.Background(), `terraform apply p`, dir, Deps{Runner: f}); v.Decision != verdict.Ask {
-		t.Fatalf("base: %v", v.Decision)
+	destroyPlan(t, dir, "p")
+	if v := decide(t, `terraform apply p`, dir, nil); v.Decision != verdict.Ask {
+		t.Fatalf("base: %v %v", v.Decision, v.Reasons)
 	}
-	v := Evaluate(context.Background(), `terraform apply p`, dir, Deps{Runner: f, ExtraStateful: []string{"terraform_data"}})
-	if v.Decision != verdict.Deny {
+	if v := Evaluate(context.Background(), `terraform apply p`, dir, dataHolding); v.Decision != verdict.Deny {
 		t.Fatalf("overlay: %v", v.Decision)
 	}
 }

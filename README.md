@@ -64,7 +64,7 @@ Exit codes are `0` no decision, `3` ask, `4` deny.
 
 | Command | How it decides | Result |
 |---|---|---|
-| `terraform apply <planfile>` | Reads the plan with `terraform show -json` | Deletes or replaces a resource that holds data: **deny**. Any other delete or replace: **ask**. Otherwise no decision |
+| `terraform apply <planfile>` | Reads the saved plan file itself, without running terraform | Deletes or replaces a resource that holds data: **deny**. Any other delete or replace: **ask**. Otherwise no decision |
 | `terraform apply`, `terraform destroy` with no saved plan | Nothing shows what they would do | **Deny**, and tells the agent to save a plan first |
 | `kubectl delete` of a namespace, PVC or PV | Looks up the volumes behind it | `reclaim=Delete`: **deny**. `Retain` or no volumes: **ask** |
 | `kubectl delete` of a StatefulSet | Reads its PVC retention policy | Claims deleted with it and `reclaim=Delete`: **deny**. Otherwise **ask** |
@@ -99,7 +99,7 @@ This is a seatbelt for a mistaken agent, not a sandbox. It does not stop an agen
 - **Commands built at run time can get through.** Custom shell functions, a tool name assembled from variables, and scripts more than one level deep are not read. Run an agent you do not trust in a real sandbox.
 - **It covers Terraform, kubectl and, by verb only, Helm.** A direct `aws rds delete-db-instance`, `DROP DATABASE` or `rm -rf` is out of scope. Run a text-matching guard such as [destructive_command_guard](https://github.com/Dicklesworthstone/destructive_command_guard) alongside it. If that guard refuses `terraform plan -destroy`, which whatdies recommends before a destroy, allow it there.
 - **MCP tools are not checked.** The hook sees shell commands only.
-- **`terraform show` starts provider binaries before you approve anything.** It needs them to read their schemas, and it runs in the directory the plan is applied from, including one named with `-chdir` or `cd`. An agent that planted a binary in `.terraform/` could get it started this way, which is one more reason this is not a sandbox. The directory must be initialised, and with a large provider this took about a second and several hundred megabytes in testing. A plan it cannot read becomes ask.
+- **A plan format whatdies does not know weakens deny to ask.** It decodes the saved plan itself, so no terraform or provider binary runs before you approve. Anything in the file it does not recognise, such as a field a newer Terraform adds, makes the verdict ask rather than a guess.
 - **A plan file can be swapped** between the check and your approval of the prompt.
 - **The list of resource types that hold data is a judgement call.** It lives in [`stateful.yaml`](internal/registry/stateful.yaml), and a type missing from it still gets ask.
 - **Claude Code only so far.** Codex, Gemini CLI, Helm analysis and OpenTofu plans are planned.
