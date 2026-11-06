@@ -53,8 +53,8 @@ func cleanAll(lines []string) []string {
 	return out
 }
 
-// clean keeps text on one line. Reasons quote plans, clusters and the command
-// itself and reach the agent, so they must not be able to start a new instruction.
+// clean blanks characters that break a line or reorder text: reasons quote plans,
+// clusters and the command and reach the agent, so they must not start an instruction.
 // It lives in the constructors because calling it at each quote missed some.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {

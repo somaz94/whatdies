@@ -55,7 +55,6 @@ var wrappers = map[string]wrapper{
 
 var shells = set("ash", "bash", "dash", "fish", "ksh", "sh", "zsh")
 
-// interpreterName matches an interpreter, including versioned names such as python3.12.
 var interpreterName = regexp.MustCompile(`^(node|perl|php|python|ruby)[0-9.]*$`)
 
 // interpreterSpec is per language because the same flag differs: -p is code for
@@ -90,7 +89,6 @@ var interpreterSpecs = map[string]interpreterSpec{
 	"ruby":   {cluster: regexp.MustCompile(`^-[A-Za-z]*e$`), value: set("-r", "-I", "-C", "-E"), attached: []string{"-r", "-I", "-C", "-E"}},
 }
 
-// stdinPaths name a program file that is really stdin.
 var stdinPaths = set("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 
 // shellValueOptions take the next word, which must not be read as a script.
@@ -597,8 +595,8 @@ func (a *analyzer) shellStdin(in stdin, f flags) {
 		func(file Arg) { a.add(Invocation{Tool: ScriptTool, Args: []Arg{file}}, nil, stdin{}) })
 }
 
-// stdinProgram handles a program whose text arrives on stdin, as the words after
-// bash -s and any path in stdinPaths are not the program.
+// stdinProgram handles program text arriving on stdin: bash -s, whose following
+// words are arguments, or a path in stdinPaths.
 func (a *analyzer) stdinProgram(what string, in stdin, text func(string), file func(Arg)) {
 	switch {
 	case in.hasHeredoc && in.heredocLiteral:

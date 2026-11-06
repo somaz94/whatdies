@@ -75,7 +75,7 @@ func readEvent(stdin io.Reader) (input, string) {
 	return in, ""
 }
 
-// guarded turns a panic or a missed deadline into ask, whichever agent asked.
+// guarded turns a panic or a missed deadline into ask.
 func guarded(ctx context.Context, deadline time.Duration, check func(context.Context) verdict.Verdict) verdict.Verdict {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()

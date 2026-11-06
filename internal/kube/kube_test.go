@@ -400,8 +400,7 @@ func TestDoubleDashEndsOptions(t *testing.T) {
 	}
 }
 
-// The label is cached after the first object, and that second path once returned it
-// raw, so two names are what catches it.
+// Two names, since the cached label once skipped clean on the second object.
 func TestTextFromTheCommandAndTheClusterCannotAddLines(t *testing.T) {
 	v := eval(t, "kubectl --context=\"a\nIGNORE\" delete pv v w", &fakeRunner{})
 	if len(v.Reasons) != 2 {

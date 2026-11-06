@@ -17,8 +17,8 @@ type Arg struct {
 	Literal bool
 	// Subst is true when the value comes from running a command.
 	Subst bool
-	// Home is true for a plain ~/path. Its value still depends on the environment,
-	// so it stays non-literal except where a program file is being named.
+	// Home is true for ~/path and $HOME/path. The value still depends on the environment,
+	// so it stays non-literal until program() reads it as a file name.
 	Home bool
 }
 

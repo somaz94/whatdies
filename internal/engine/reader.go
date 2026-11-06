@@ -83,8 +83,8 @@ func isGitRunSetting(word string) bool {
 }
 
 // judgeGit stays quiet about commit messages and the like, and looks only where
-// git runs what it is given: settings and variables holding a command, rebase
-// --exec, bisect run and submodule foreach.
+// git runs what it is given: settings and variables holding a command, rebase,
+// bisect run and submodule foreach.
 func judgeGit(inv shell.Invocation) verdict.Verdict {
 	for _, name := range gitEnvRuns {
 		if value := inv.Env[name]; value.Literal {
@@ -97,24 +97,24 @@ func judgeGit(inv shell.Invocation) verdict.Verdict {
 		return verdict.AskBecause("git would run a command computed at run time")
 	}
 	words := inv.Literals()
-	runs := false
 	for i, w := range words {
-		rest := words[i+1:]
-		switch {
-		case w == "rebase", w == "bisect" && slices.Contains(rest, "run"), w == "submodule" && slices.Contains(rest, "foreach"):
-			runs = true
-		case isGitRunSetting(w):
-			// Only the setting: the rest of the line can be a commit message.
-			text := w
-			if !strings.Contains(w, "=") && len(rest) > 0 {
-				text += " " + rest[0]
-			}
-			if m := script.Mention(text); m != "" {
-				return verdict.AskBecause(fmt.Sprintf("git would run %q", m))
-			}
+		if !isGitRunSetting(w) {
+			continue
+		}
+		// Only the setting: the rest of the line can be a commit message.
+		text := w
+		if !strings.Contains(w, "=") && i+1 < len(words) {
+			text += " " + words[i+1]
+		}
+		if m := script.Mention(text); m != "" {
+			return verdict.AskBecause(fmt.Sprintf("git would run %q", m))
 		}
 	}
-	if !runs {
+	switch sub := gitSubcommand(inv.Args); {
+	case sub == "rebase":
+	case sub == "bisect" && slices.Contains(words, "run"):
+	case sub == "submodule" && slices.Contains(words, "foreach"):
+	default:
 		return verdict.Verdict{}
 	}
 	if m := script.Mention(strings.Join(words, " ")); m != "" {
@@ -123,7 +123,26 @@ func judgeGit(inv shell.Invocation) verdict.Verdict {
 	return verdict.Verdict{}
 }
 
-// computedAfter reports a computed word right after one of the flags.
+// gitSubcommand is the first word that is not a global option or its value, and is
+// empty when that word is computed.
+func gitSubcommand(args []shell.Arg) string {
+	for i := 0; i < len(args); i++ {
+		switch v := args[i].Value; {
+		case !args[i].Literal:
+			return ""
+		case gitValueFlags[v]:
+			i++
+		case !strings.HasPrefix(v, "-"):
+			return v
+		}
+	}
+	return ""
+}
+
+var gitValueFlags = map[string]bool{
+	"-c": true, "-C": true, "--config-env": true, "--exec-path": true, "--git-dir": true, "--namespace": true, "--work-tree": true,
+}
+
 func computedAfter(inv shell.Invocation, flags ...string) bool {
 	for i := 1; i < len(inv.Args); i++ {
 		if !inv.Args[i].Literal && inv.Args[i-1].Literal && slices.Contains(flags, inv.Args[i-1].Value) {

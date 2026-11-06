@@ -88,7 +88,7 @@ func classify(actions []string) effect {
 	return harmless
 }
 
-// planFacts is what a verdict needs from a plan, however the plan was read.
+// planFacts is what a verdict needs from a plan.
 type planFacts struct {
 	Errored      bool
 	NotApplyable bool

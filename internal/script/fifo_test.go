@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Opening a FIFO blocks until a writer appears, which is a file an agent can make.
+// An agent can create a FIFO, and opening one blocks until a writer appears.
 func TestFileDoesNotOpenAFIFO(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ff")
 	if err := syscall.Mkfifo(path, 0o600); err != nil {

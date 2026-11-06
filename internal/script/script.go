@@ -28,7 +28,7 @@ const (
 	options = `(?:` + separator + `(?:-n|--namespace|--context|--kubeconfig)` + separator + `[^ \t"',]+|` + separator + `-[^ \t"',=]+=[^ \t"',]+|` + separator + `-n[^ \t"',]+)*`
 
 	terraformTool = `\b(?:terraform|tofu|terragrunt)`
-	// The short names must not be the tail of -k, .tf or a path.
+	// tf and tg must not be the tail of my-tf, main.tf or a path.
 	terraformAlias = `(?:` + terraformTool + `|(?:^|[^-\w./])(?:tf|tg))`
 	kubeTool       = `\b(?:kubectl|kubecolor|oc)`
 )

@@ -141,8 +141,6 @@ func judgeScript(inv shell.Invocation, earlier []shell.Invocation) verdict.Verdi
 	return out
 }
 
-// scriptPath finds a script on disk. A relative path needs a known directory; an
-// absolute one or one under ~/ does not.
 func scriptPath(inv shell.Invocation, path string) (string, bool) {
 	if rest, ok := strings.CutPrefix(path, "~/"); ok {
 		home, err := os.UserHomeDir()
