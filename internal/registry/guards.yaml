@@ -1,0 +1,56 @@
+# Attributes that guard a resource's data, with the value that turns the guard
+# off. An in-place update that turns one of them off is ask, since it lets a later
+# destroy lose data that it would otherwise have refused or kept. Only top-level
+# boolean attributes are read. Add one by opening a pull request with a line here.
+guards:
+  # AWS
+  aws_backup_vault:
+    force_destroy: true
+  aws_cloudwatch_log_group:
+    skip_destroy: false
+  aws_db_instance:
+    deletion_protection: false
+    skip_final_snapshot: true
+  aws_docdb_cluster:
+    deletion_protection: false
+    skip_final_snapshot: true
+  aws_dynamodb_table:
+    deletion_protection_enabled: false
+  aws_ecr_repository:
+    force_delete: true
+  aws_neptune_cluster:
+    deletion_protection: false
+    skip_final_snapshot: true
+  aws_rds_cluster:
+    deletion_protection: false
+    skip_final_snapshot: true
+  aws_rds_global_cluster:
+    deletion_protection: false
+    force_destroy: true
+  aws_redshift_cluster:
+    skip_final_snapshot: true
+  aws_s3_bucket:
+    force_destroy: true
+  aws_s3_directory_bucket:
+    force_destroy: true
+  # Google Cloud
+  google_alloydb_cluster:
+    deletion_protection: false
+  google_bigquery_dataset:
+    delete_contents_on_destroy: true
+  google_bigquery_table:
+    deletion_protection: false
+  google_bigtable_instance:
+    deletion_protection: false
+  google_container_cluster:
+    deletion_protection: false
+  google_filestore_instance:
+    deletion_protection_enabled: false
+  google_spanner_database:
+    deletion_protection: false
+  google_spanner_instance:
+    force_destroy: true
+  google_sql_database_instance:
+    deletion_protection: false
+  google_storage_bucket:
+    force_destroy: true

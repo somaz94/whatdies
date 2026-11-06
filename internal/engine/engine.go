@@ -100,7 +100,7 @@ func asksForHelp(inv shell.Invocation) bool {
 }
 
 func judgeTerraform(inv shell.Invocation, earlier []shell.Invocation, d Deps) verdict.Verdict {
-	return terraform.Evaluate(inv, earlier, terraform.Deps{Stateful: d.stateful})
+	return terraform.Evaluate(inv, earlier, terraform.Deps{Stateful: d.stateful, Guards: registry.Guards})
 }
 
 func (d Deps) stateful() (map[string]bool, error) {

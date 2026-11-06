@@ -22,7 +22,7 @@ func eval(t *testing.T, cmd, cwd string) verdict.Verdict {
 	var out verdict.Verdict
 	for i, inv := range a.Invocations {
 		if inv.Tool == "terraform" {
-			out = verdict.Join(out, Evaluate(inv, a.Invocations[:i], Deps{Stateful: func() (map[string]bool, error) { return stateful, nil }}))
+			out = verdict.Join(out, Evaluate(inv, a.Invocations[:i], Deps{Stateful: func() (map[string]bool, error) { return stateful, nil }, Guards: func() (map[string]map[string]bool, error) { return testGuards, nil }}))
 		}
 	}
 	return out
@@ -182,9 +182,17 @@ func TestUnreadablePlansAreAsk(t *testing.T) {
 func TestStatefulLoadFailureIsAsk(t *testing.T) {
 	dir := fatalDir(t, "p")
 	a := shell.Analyze(`terraform apply p`, dir)
-	v := Evaluate(a.Invocations[0], nil, Deps{Stateful: func() (map[string]bool, error) { return nil, errors.New("registry broken") }})
+	noGuards := func() (map[string]map[string]bool, error) { return nil, nil }
+	v := Evaluate(a.Invocations[0], nil, Deps{Stateful: func() (map[string]bool, error) { return nil, errors.New("registry broken") }, Guards: noGuards})
 	if v.Decision != verdict.Ask || v.Reasons[0] != "registry broken" {
 		t.Fatalf("%v %v", v.Decision, v.Reasons)
+	}
+	v = Evaluate(a.Invocations[0], nil, Deps{Stateful: func() (map[string]bool, error) { return stateful, nil }, Guards: func() (map[string]map[string]bool, error) { return nil, errors.New("guards broken") }})
+	if v.Decision != verdict.Ask || v.Reasons[0] != "guards broken" {
+		t.Fatalf("%v %v", v.Decision, v.Reasons)
+	}
+	if v = Evaluate(a.Invocations[0], nil, Deps{}); v.Decision != verdict.Ask {
+		t.Fatalf("no lists: %v %v", v.Decision, v.Reasons)
 	}
 }
 

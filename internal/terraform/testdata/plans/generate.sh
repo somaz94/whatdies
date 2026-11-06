@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerates the saved plans and their `terraform show -json` output that
-# planfile_test.go compares. Needs terraform and network access for hashicorp/local.
+# planfile_test.go compares. Needs terraform and network access for hashicorp/local and hashicorp/aws.
 # Every workspace is synthetic and lives in a temporary directory.
 if [ -n "${ZSH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -19,6 +19,12 @@ mkdir "$stage"
 while IFS= read -r v; do unset "$v"; done < <(env | sed -n 's/^\(TF_[A-Za-z0-9_]*\)=.*/\1/p')
 printf 'provider_installation {\n  direct {}\n}\n' >"$work/terraformrc"
 export TF_CLI_CONFIG_FILE="$work/terraformrc" TF_IN_AUTOMATION=1 TF_INPUT=0 CHECKPOINT_DISABLE=1
+
+# AWS_* and ~/.aws would let the user's profiles and settings reach the guards workspace's provider.
+while IFS= read -r v; do unset "$v"; done < <(env | sed -n 's/^\(AWS_[A-Za-z0-9_]*\)=.*/\1/p')
+: >"$work/aws-config"
+: >"$work/aws-credentials"
+export AWS_CONFIG_FILE="$work/aws-config" AWS_SHARED_CREDENTIALS_FILE="$work/aws-credentials" AWS_EC2_METADATA_DISABLED=true
 
 tf() { terraform "$@" -no-color >/dev/null; }
 
@@ -273,5 +279,74 @@ EOF
 tf init
 tf plan -out=p
 save action p
+
+# Guards from a real provider: turned on, left on beside another change, turned off, unknown until apply,
+# and deletion_protection, whose off value is false. Fake credentials and -refresh=false keep the provider
+# from calling AWS.
+workspace guards
+cat >main.tf <<'EOF'
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.72.0" }
+  }
+}
+
+provider "aws" {
+  region                      = "us-east-1"
+  access_key                  = "fixture"
+  secret_key                  = "fixture"
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
+  skip_region_validation      = true
+}
+
+resource "terraform_data" "later" {
+  input = true
+}
+
+resource "aws_s3_bucket" "weakened" {
+  bucket        = "example-weakened"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket" "kept" {
+  bucket        = "example-kept"
+  force_destroy = true
+  tags          = { a = "2" }
+}
+
+resource "aws_s3_bucket" "guarded" {
+  bucket        = "example-guarded"
+  force_destroy = false
+}
+
+resource "aws_s3_bucket" "unknown" {
+  bucket        = "example-unknown"
+  force_destroy = terraform_data.later.output
+}
+
+resource "aws_db_instance" "unprotected" {
+  identifier          = "example-db"
+  engine              = "postgres"
+  instance_class      = "db.t3.micro"
+  allocated_storage   = 20
+  username            = "fixture"
+  deletion_protection = false
+  skip_final_snapshot = false
+}
+EOF
+tf init
+bucket() {
+  printf '{"mode":"managed","type":"aws_s3_bucket","name":"%s","provider":"provider[\\"registry.terraform.io/hashicorp/aws\\"]","instances":[{"schema_version":0,"attributes":{"id":"example-%s","bucket":"example-%s","force_destroy":%s,"region":"us-east-1","tags":%s,"tags_all":%s},"sensitive_attributes":[]}]}' \
+    "$1" "$1" "$1" "$2" "$3" "$3"
+}
+db='{"mode":"managed","type":"aws_db_instance","name":"unprotected","provider":"provider[\"registry.terraform.io/hashicorp/aws\"]","instances":[{"schema_version":2,"attributes":{"id":"db-FIXTURE","identifier":"example-db","engine":"postgres","instance_class":"db.t3.micro","allocated_storage":20,"username":"fixture","deletion_protection":true,"skip_final_snapshot":false,"region":"us-east-1"},"sensitive_attributes":[]}]}'
+printf '{"version":4,"terraform_version":"1.0.0","serial":1,"lineage":"fixture","outputs":{},"resources":[%s,%s,%s,%s,%s]}' \
+  "$(bucket weakened false null)" "$(bucket kept true '{"a":"1"}')" \
+  "$(bucket guarded true null)" "$(bucket unknown false null)" "$db" >state.json
+tf state push state.json
+tf plan -refresh=false -out=p
+save guards p
 
 cp "$stage"/* "$out"/

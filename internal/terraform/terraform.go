@@ -41,6 +41,9 @@ type Deps struct {
 	// Stateful returns the set of resource types whose deletion loses data. It is a
 	// function so that the many terraform commands that read no plan do not parse it.
 	Stateful func() (map[string]bool, error)
+	// Guards maps a resource type to the attributes that guard its data and the
+	// value that turns each off.
+	Guards func() (map[string]map[string]bool, error)
 }
 
 var readOnly = map[string]bool{
@@ -256,7 +259,14 @@ func writesPlan(plan string, earlier []shell.Invocation) string {
 }
 
 func readPlan(dir, plan string, d Deps) verdict.Verdict {
-	facts, problem := readPlanFile(resolve(dir, plan))
+	if d.Guards == nil || d.Stateful == nil {
+		return verdict.AskBecause("whatdies was built without its resource lists")
+	}
+	guards, err := d.Guards()
+	if err != nil {
+		return verdict.AskBecause(err.Error())
+	}
+	facts, problem := readPlanFile(resolve(dir, plan), guards)
 	if problem != "" {
 		return verdict.AskBecause(fmt.Sprintf("could not read plan %q: %s", plan, problem))
 	}

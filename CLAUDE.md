@@ -31,9 +31,10 @@ Keep coverage at 90% or above, excluding `cmd/main.go`. `make cover-check` enfor
 - **A script's text comes from every write in the line and from the disk.** A write can be conditional (`[ -f x ] || echo ok > x`) or an append, so one that looks final must not hide the file (2026-11-05)
 - **`TF_CLI_ARGS` from the user's environment is ignored, set by the command it is ask.** The first version treated both as ask and blocked every plan on a real shell that sets it (2026-11-05)
 - **Advice must be something the tool can do.** `terraform plan -out=.terraform/x` fails when `.terraform/` does not exist, which is why `planPath` checks (2026-11-05)
-- **`stateful.yaml` is data.** A new resource type is a line there, and a type missing from it still gets ask
+- **`stateful.yaml` and `guards.yaml` are data.** A new resource type or guard attribute is a line there. A type missing from `stateful.yaml` still gets ask; a guard missing from `guards.yaml` is not seen, and is the only gap the file closes
+- **Plan values are opened only for a type in `guards.yaml`, and only its guard keys are decoded** (`planvalues.go`). Every other value is stepped over by length, so a secret in the plan is never held as a string (2026-11-06)
 - **A plan field, version, action or address the decoder does not know is ask.** Field numbers were observed in plans terraform wrote, not copied from its source, so a format change must surface as ask, never as no decision. That is also why `applyable` is not trusted: a plan with no changes has it false and still applies (2026-11-06)
-- **Decode only the plan fields a verdict needs** (`planfile.go` skips the values field). Plans hold secrets in clear text, and what is never decoded cannot reach a message. `verdict.AskBecause` and `DenyBecause` clean every line, since text quoted from a plan, a cluster or the command reaches an agent. Calling `clean` at each quote missed some (2026-11-05)
+- **Decode only the plan fields a verdict needs** (`planfile.go`, and `planvalues.go` for guard keys). Plans hold secrets in clear text, and what is never decoded cannot reach a message. `verdict.AskBecause` and `DenyBecause` clean every line, since text quoted from a plan, a cluster or the command reaches an agent. Calling `clean` at each quote missed some (2026-11-05)
 
 <br/>
 

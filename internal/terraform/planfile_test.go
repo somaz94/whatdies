@@ -40,7 +40,7 @@ func TestSavedPlansMatchTerraformShow(t *testing.T) {
 	}
 	for _, path := range paths {
 		name := strings.TrimSuffix(filepath.Base(path), ".tfplan")
-		got, problem := readPlanFile(path)
+		got, problem := readPlanFile(path, testGuards)
 		if problem != "" {
 			t.Errorf("%s: %s", name, problem)
 			continue
@@ -49,7 +49,7 @@ func TestSavedPlansMatchTerraformShow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want, problem := factsFromJSON(raw)
+		want, problem := factsFromJSON(raw, testGuards)
 		if problem != "" {
 			t.Fatalf("%s: %s", name, problem)
 		}
@@ -61,7 +61,7 @@ func TestSavedPlansMatchTerraformShow(t *testing.T) {
 
 func TestSavedPlanFixturesCoverEveryShape(t *testing.T) {
 	read := func(name string) planFacts {
-		f, problem := readPlanFile("testdata/plans/" + name + ".tfplan")
+		f, problem := readPlanFile("testdata/plans/"+name+".tfplan", nil)
 		if problem != "" {
 			t.Fatalf("%s: %s", name, problem)
 		}
@@ -92,6 +92,19 @@ func TestSavedPlanFixturesCoverEveryShape(t *testing.T) {
 	}
 	if v := judgeFacts(read("rich"), nil); v.Decision != verdict.None {
 		t.Errorf("drift, moved, import, checks and outputs changed the verdict: %v %v", v.Decision, v.Reasons)
+	}
+	guards, problem := readPlanFile("testdata/plans/guards.tfplan", testGuards)
+	if problem != "" {
+		t.Fatal(problem)
+	}
+	v := judgeFacts(guards, nil)
+	want := []string{
+		"aws_s3_bucket.weakened sets force_destroy to true, so a later destroy can lose data it would have kept",
+		"aws_s3_bucket.unknown may set force_destroy to true when applied, so a later destroy can lose data it would have kept",
+		"aws_db_instance.unprotected sets deletion_protection to false, so a later destroy can lose data it would have kept",
+	}
+	if v.Decision != verdict.Ask || !slices.Equal(slices.Sorted(slices.Values(v.Reasons)), slices.Sorted(slices.Values(want))) {
+		t.Errorf("guards: %v %q", v.Decision, v.Reasons)
 	}
 	if v := judgeFacts(read("no-change"), nil); v.Decision != verdict.None {
 		t.Errorf("no-change: %v %v", v.Decision, v.Reasons)
@@ -135,7 +148,7 @@ func TestAnythingNotUnderstoodIsAProblem(t *testing.T) {
 	}
 	for name, c := range cases {
 		path := writePlan(t, t.TempDir(), "p", c.plan)
-		if _, problem := readPlanFile(path); !strings.Contains(problem, c.want) {
+		if _, problem := readPlanFile(path, nil); !strings.Contains(problem, c.want) {
 			t.Errorf("%s: problem %q, want %q", name, problem, c.want)
 		}
 	}
@@ -154,7 +167,7 @@ func TestDecodedFacts(t *testing.T) {
 		// A fixed64 field at a known number is skipped like any other.
 		extra: append([]byte{0x29}, make([]byte, 8)...),
 	}
-	got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p))
+	got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p), nil)
 	if problem != "" {
 		t.Fatal(problem)
 	}
@@ -181,17 +194,17 @@ func TestProvisionersAreFoundInTheConfigurationText(t *testing.T) {
 		"json escape": {"tfconfig/m-/main.tf.json": `{"resource":{"x":{"y":{"\u0070rovisioner":[]}}}}`},
 		"broken json": {"tfconfig/m-/main.tf.json": `{"resource":`},
 	} {
-		got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{config: config}))
+		got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{config: config}), nil)
 		if problem != "" || !got.Provisioners {
 			t.Errorf("%s: %+v %q", name, got, problem)
 		}
 	}
-	got, _ := readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{config: map[string]string{"tfconfig/m-/main.tf": "resource \"x\" \"y\" {}"}}))
+	got, _ := readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{config: map[string]string{"tfconfig/m-/main.tf": "resource \"x\" \"y\" {}"}}), nil)
 	if got.Provisioners {
 		t.Error("found a provisioner in a configuration without one")
 	}
 	// Outside tfconfig/ the text is state or a lock file, not configuration.
-	got, _ = readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{config: map[string]string{"tfstate": "provisioner"}}))
+	got, _ = readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{config: map[string]string{"tfstate": "provisioner"}}), nil)
 	if got.Provisioners {
 		t.Error("searched outside tfconfig/")
 	}
@@ -226,7 +239,7 @@ func TestPlanFilesThatCannotBeReadAsPlans(t *testing.T) {
 	}
 	cases["text/x"] = "could not be inspected"
 	for name, want := range cases {
-		if _, problem := readPlanFile(filepath.Join(dir, name)); !strings.Contains(problem, want) {
+		if _, problem := readPlanFile(filepath.Join(dir, name), nil); !strings.Contains(problem, want) {
 			t.Errorf("%s: problem %q, want %q", name, problem, want)
 		}
 	}
@@ -291,11 +304,11 @@ func TestEntriesThatCannotBeRead(t *testing.T) {
 	}
 	tfplan := testPlan{}.tfplan()
 	path := write(zipWith(t, map[string][]byte{"tfplan": tfplan, "tfconfig/m-/main.tf": []byte("x")}, "tfconfig/m-/main.tf"))
-	if _, problem := readPlanFile(path); !strings.Contains(problem, "configuration could not be searched") {
+	if _, problem := readPlanFile(path, nil); !strings.Contains(problem, "configuration could not be searched") {
 		t.Errorf("config: %q", problem)
 	}
 	path = write(zipWith(t, map[string][]byte{"tfplan": tfplan}, "tfplan"))
-	if _, problem := readPlanFile(path); !strings.Contains(problem, "tfplan entry could not be read") {
+	if _, problem := readPlanFile(path, nil); !strings.Contains(problem, "tfplan entry could not be read") {
 		t.Errorf("tfplan: %q", problem)
 	}
 }
@@ -339,7 +352,7 @@ func TestParseAddress(t *testing.T) {
 func TestSecretsInAPlanNeverReachTheReason(t *testing.T) {
 	p := testPlan{changes: []testChange{{address: "aws_db_instance.main", action: actDelete}}}
 	p.extra = pbBytes(2, pbBytes(1, []byte("hunter2")))
-	got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p))
+	got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p), nil)
 	if problem != "" {
 		t.Fatal(problem)
 	}
@@ -353,11 +366,11 @@ func TestTooManyChangesIsAProblem(t *testing.T) {
 	for i := range p.changes {
 		p.changes[i] = testChange{address: "a.b", action: actNoOp}
 	}
-	if _, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p)); !strings.Contains(problem, "more than") {
+	if _, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p), nil); !strings.Contains(problem, "more than") {
 		t.Fatalf("problem %q", problem)
 	}
 	p.changes = p.changes[:maxChanges]
-	if _, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p)); problem != "" {
+	if _, problem := readPlanFile(writePlan(t, t.TempDir(), "p", p), nil); problem != "" {
 		t.Fatalf("at the cap: %q", problem)
 	}
 }
@@ -383,7 +396,7 @@ func TestRepeatedFieldsMatchTerraform(t *testing.T) {
 		"complete then incomplete": {append(change(pbVarint(bodyAction, actDelete)), pbVarint(fieldComplete, 0)...), []string{"delete"}, true},
 	}
 	for name, c := range cases {
-		got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{extra: c.extra}))
+		got, problem := readPlanFile(writePlan(t, t.TempDir(), "p", testPlan{extra: c.extra}), nil)
 		if problem != "" || len(got.Changes) != 1 || !slices.Equal(got.Changes[0].Actions, c.actions) || got.Partial != c.partial {
 			t.Errorf("%s: %+v %q", name, got, problem)
 		}
@@ -392,10 +405,11 @@ func TestRepeatedFieldsMatchTerraform(t *testing.T) {
 
 func FuzzFactsFromProto(f *testing.F) {
 	f.Add(testPlan{}.tfplan())
+	f.Add(testPlan{changes: []testChange{{address: "aws_s3_bucket.b", action: actUpdate, values: [][]byte{bucket(mpFalse), bucket(mpTrue)}}}}.tfplan())
 	f.Add(fatalPlan.tfplan())
 	f.Add(testPlan{changes: []testChange{{address: `module.a["k"].data.t.n[0]`, action: actReplace, deposed: "d"}}, actions: 1, errored: true}.tfplan())
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		facts, problem := factsFromProto(raw)
+		facts, problem := factsFromProto(raw, testGuards)
 		if problem != "" && !reflect.DeepEqual(facts, planFacts{}) {
 			t.Fatalf("facts returned with a problem: %+v", facts)
 		}

@@ -24,6 +24,8 @@ type testChange struct {
 	address string
 	action  uint64
 	deposed string
+	// Each is a msgpack document wrapped as a DynamicValue; nil means one empty map.
+	values [][]byte
 }
 
 // testPlan builds a saved plan. The zero value is an empty, complete plan.
@@ -55,7 +57,14 @@ func (p testPlan) tfplan() []byte {
 	out := pbVarint(fieldVersion, version)
 	for _, c := range p.changes {
 		rc := pbBytes(changeAddress, []byte(c.address))
-		rc = append(rc, pbBytes(changeBody, append(pbVarint(bodyAction, c.action), pbBytes(2, []byte("values"))...))...)
+		body := pbVarint(bodyAction, c.action)
+		if c.values == nil {
+			body = append(body, pbBytes(bodyValues, pbBytes(dynamicMsgpack, mpMap()))...)
+		}
+		for _, v := range c.values {
+			body = append(body, pbBytes(bodyValues, pbBytes(dynamicMsgpack, v))...)
+		}
+		rc = append(rc, pbBytes(changeBody, body)...)
 		if c.deposed != "" {
 			rc = append(rc, pbBytes(changeDeposed, []byte(c.deposed))...)
 		}

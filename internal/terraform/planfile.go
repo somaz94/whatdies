@@ -30,6 +30,7 @@ const (
 	changeBody    = 9
 	changeAddress = 13
 	bodyAction    = 1
+	bodyValues    = 2
 )
 
 // knownTopFields are the fields factsFromProto decodes, plus those seen to carry
@@ -54,7 +55,7 @@ const (
 
 // readPlanFile decodes a saved plan without running terraform. A problem is
 // returned instead of facts whenever the file is not fully understood.
-func readPlanFile(path string) (planFacts, string) {
+func readPlanFile(path string, guards map[string]map[string]bool) (planFacts, string) {
 	f, size, problem := openRegular(path)
 	if problem != "" {
 		return planFacts{}, problem
@@ -90,7 +91,7 @@ func readPlanFile(path string) (planFacts, string) {
 	if err != nil {
 		return planFacts{}, "its tfplan entry could not be read: " + err.Error()
 	}
-	facts, problem := factsFromProto(raw)
+	facts, problem := factsFromProto(raw, guards)
 	facts.Provisioners = provisioners
 	return facts, problem
 }
@@ -161,7 +162,7 @@ func readEntry(f *zip.File, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func factsFromProto(raw []byte) (planFacts, string) {
+func factsFromProto(raw []byte, guards map[string]map[string]bool) (planFacts, string) {
 	var facts planFacts
 	version, complete := uint64(0), false
 	err := eachField(raw, func(num uint64, f field) error {
@@ -195,7 +196,7 @@ func factsFromProto(raw []byte) (planFacts, string) {
 			var body []byte
 			if body, err = f.bytes(); err == nil {
 				var c plannedChange
-				if c, err = decodeChange(body); err == nil {
+				if c, err = decodeChange(body, guards); err == nil {
 					facts.Changes = append(facts.Changes, c)
 				}
 			}
@@ -212,9 +213,10 @@ func factsFromProto(raw []byte) (planFacts, string) {
 	return facts, ""
 }
 
-func decodeChange(raw []byte) (plannedChange, error) {
+func decodeChange(raw []byte, guards map[string]map[string]bool) (plannedChange, error) {
 	var c plannedChange
 	var action uint64
+	var values [][]byte
 	hasBody := false
 	err := eachField(raw, func(num uint64, f field) error {
 		var err error
@@ -231,8 +233,13 @@ func decodeChange(raw []byte) (plannedChange, error) {
 				hasBody = true
 				err = eachField(body, func(num uint64, f field) error {
 					var err error
-					if num == bodyAction {
+					switch num {
+					case bodyAction:
 						action, err = f.varint()
+					case bodyValues:
+						var v []byte
+						v, err = f.bytes()
+						values = append(values, v)
 					}
 					return err
 				})
@@ -255,6 +262,13 @@ func decodeChange(raw []byte) (plannedChange, error) {
 		return c, fmt.Errorf("%s has action %d, which whatdies does not know", c.Address, action)
 	}
 	c.Type, c.Data, c.Actions = typ, data, actions
+	if attrs := guards[typ]; len(attrs) > 0 && action == actionUpdate && !data {
+		weakens, err := weakenedGuards(values, attrs)
+		if err != nil {
+			return c, fmt.Errorf("%s: %w", c.Address, err)
+		}
+		c.Weakens = weakens
+	}
 	return c, nil
 }
 

@@ -64,7 +64,7 @@ Exit codes are `0` no decision, `3` ask, `4` deny.
 
 | Command | How it decides | Result |
 |---|---|---|
-| `terraform apply <planfile>` | Reads the saved plan file itself, without running terraform | Deletes or replaces a resource that holds data: **deny**. Any other delete or replace: **ask**. Otherwise no decision |
+| `terraform apply <planfile>` | Reads the saved plan file itself, without running terraform | Deletes or replaces a resource that holds data: **deny**. Any other delete or replace, or an update that turns off a guard such as `force_destroy`: **ask**. Otherwise no decision |
 | `terraform apply`, `terraform destroy` with no saved plan | Nothing shows what they would do | **Deny**, and tells the agent to save a plan first |
 | `kubectl delete` of a namespace, PVC or PV | Looks up the volumes behind it | `reclaim=Delete`: **deny**. `Retain` or no volumes: **ask** |
 | `kubectl delete` of a StatefulSet | Reads its PVC retention policy | Claims deleted with it and `reclaim=Delete`: **deny**. Otherwise **ask** |
@@ -87,7 +87,7 @@ A guard that runs commands on an agent's behalf is itself a risk, so:
 - **It does not run `terraform plan`.** That would execute agent-written code, such as a `data "external"` block, before you approve anything. The agent runs the plan through your normal permissions, and whatdies reads the file. Terraform itself refuses a saved plan that has gone stale.
 - **It only ever calls `kubectl get`.** A server-side dry run of the delete needs delete rights, shows no cascade, and is one flag away from a real delete.
 - **It will not probe a target the command chose.** With `--kubeconfig`, `--server`, an inline `KUBECONFIG=` or `./kubectl`, a credential plugin could run code the agent wrote, so it asks without looking.
-- **Plan values stay out of messages.** A plan holds secrets in clear text, so only addresses, types and actions are decoded.
+- **Plan values stay out of messages.** A plan holds secrets in clear text, so only addresses, types, actions and the guard attributes listed in [`guards.yaml`](internal/registry/guards.yaml) are decoded.
 - **It fails closed.** A timeout, a crash, missing credentials or an unreadable plan becomes ask.
 
 <br/>

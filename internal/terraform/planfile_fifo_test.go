@@ -15,7 +15,7 @@ func TestPlanFileIsNotOpenedWhenItIsAFIFO(t *testing.T) {
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, problem := readPlanFile(path); !strings.Contains(problem, "not a regular file") {
+	if _, problem := readPlanFile(path, nil); !strings.Contains(problem, "not a regular file") {
 		t.Fatalf("problem %q", problem)
 	}
 }
