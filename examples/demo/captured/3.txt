@@ -1,3 +1,5 @@
-DENY
+[1;31mDENY[0m
   terraform apply without a saved plan cannot be checked: nothing shows what it would destroy
-  -> Run `terraform plan -out=whatdies.tfplan` in its own Bash call, then `terraform apply whatdies.tfplan` in a separate call so whatdies can read the plan. The plan holds sensitive values in clear text: do not commit it. If saving a plan is not possible here, stop and ask the user to run this themselves.
+  -> Run `terraform plan -out=whatdies.tfplan` in its own Bash call, then `terraform apply whatdies.tfplan` in a
+     separate call so whatdies can read the plan. The plan holds sensitive values in clear text: do not commit it. If
+     saving a plan is not possible here, stop and ask the user to run this themselves.

@@ -19,7 +19,7 @@ func execute(t *testing.T, stdin string, args ...string) (string, error) {
 	rootCmd.SetErr(&out)
 	rootCmd.SetIn(strings.NewReader(stdin))
 	rootCmd.SetArgs(args)
-	checkJSON, checkStateful, checkDir, installClaude, installCodex, installProject, hookCodex = false, nil, "", false, false, false, false
+	checkJSON, checkStateful, checkDir, checkColor, checkWidth, installClaude, installCodex, installProject, hookCodex = false, nil, "", "auto", 0, false, false, false, false
 	err := rootCmd.Execute()
 	return out.String(), err
 }
@@ -226,5 +226,54 @@ func TestExecuteReturnsExitCodes(t *testing.T) {
 	}
 	if !strings.Contains(exitError{3}.Error(), "3") {
 		t.Fatal("exitError message")
+	}
+}
+
+func TestCheckColoursAndWrapsOnlyWhenAsked(t *testing.T) {
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "none"))
+	out, err := execute(t, "", "check", "terraform apply -auto-approve")
+	if code(err) != exitDeny || strings.Contains(out, "\x1b[") || strings.Count(out, "\n") != 3 {
+		t.Fatalf("plain output to a pipe: %q", out)
+	}
+	out, _ = execute(t, "", "check", "--color", "always", "--width", "60", "terraform apply -auto-approve")
+	if !strings.HasPrefix(out, red+"DENY"+reset) {
+		t.Fatalf("colour: %q", out)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+		if len(line) > 60 && !strings.Contains(strings.TrimSpace(line), " ") {
+			continue
+		}
+		if len(line) > 60 {
+			t.Errorf("line over the width: %q", line)
+		}
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("continuation lost its indent: %q", line)
+		}
+	}
+	out, _ = execute(t, "", "check", "--color", "always", "helm uninstall x --kubeconfig k")
+	if !strings.HasPrefix(out, yellow+"ASK"+reset) {
+		t.Fatalf("ask colour: %q", out)
+	}
+	t.Setenv("NO_COLOR", "1")
+	if out, _ = execute(t, "", "check", "--color", "never", "terraform destroy"); strings.Contains(out, "\x1b[") {
+		t.Fatalf("never: %q", out)
+	}
+	for _, args := range [][]string{{"--color", "rainbow"}, {"--width", "-1"}} {
+		if _, err := execute(t, "", append(append([]string{"check"}, args...), "terraform destroy")...); err == nil || code(err) != 0 {
+			t.Errorf("%v: err=%v", args, err)
+		}
+	}
+}
+
+func TestWrapKeepsLongWordsAndShortWidthsWhole(t *testing.T) {
+	s := style{width: 30}
+	if got := s.wrap("  ", "    ", "a "+strings.Repeat("x", 40)+" b"); got != "  a\n    "+strings.Repeat("x", 40)+"\n    b" {
+		t.Fatalf("got %q", got)
+	}
+	if got := (style{width: 10}).wrap("  -> ", "     ", "too narrow to wrap at all"); got != "  -> too narrow to wrap at all" {
+		t.Fatalf("narrow: %q", got)
+	}
+	if got := (style{}).paint(red, "x"); got != "x" {
+		t.Fatalf("paint without colour: %q", got)
 	}
 }

@@ -75,7 +75,7 @@ Exit codes are `0` no decision, `3` ask, `4` deny.
 | `helm upgrade`, `drain`, `state rm`, `--prune`, `--replicas=0` and similar | The verb alone | **Ask** |
 | A command it cannot see into: `eval "$X"`, `curl ... \| bash`, `kubectl delete pod $POD` | The shape of the command | **Ask** |
 
-Commands that are not infrastructure get no decision, in about two milliseconds. The rules, and how each one is decided, are in [docs/verdicts.md](docs/verdicts.md).
+In a terminal it colours the verdict and wraps long lines; `--color never` turns colour off, `NO_COLOR` is honoured, and `--json` prints the verdict for a script. Commands that are not infrastructure get no decision, in about two milliseconds. The rules, and how each one is decided, are in [docs/verdicts.md](docs/verdicts.md).
 
 It never answers `allow`. It can only add friction, so your normal permission rules still apply to everything it lets through.
 

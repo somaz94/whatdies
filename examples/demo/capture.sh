@@ -25,8 +25,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# check exits non-zero on ask and deny, which is what is being captured.
-capture() { "$whatdies" check "$2" >"$out/$1.txt" || true; }
+# check exits non-zero on ask and deny, which is what is being captured. The output
+# goes to a file, so colour and the recording terminal's width are asked for.
+capture() {
+  local rc=0
+  "$whatdies" check --color always --width 120 "$2" >"$out/$1.txt" || rc=$?
+  case $rc in
+    0 | 3 | 4) ;;
+    *) echo "whatdies check failed ($rc) for: $2" >&2; exit "$rc" ;;
+  esac
+}
 
 mkdir -p "$out"
 kind create cluster --name "$cluster" --kubeconfig "$KUBECONFIG" --wait 120s >/dev/null
