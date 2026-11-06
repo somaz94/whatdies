@@ -33,6 +33,8 @@ dist/
 
 # Terraform (plans hold sensitive values in clear text)
 *.tfplan
+# Synthetic plans written by generate.sh, which the decoder tests read.
+!internal/terraform/testdata/plans/*.tfplan
 *.tfstate
 *.tfstate.*
 .terraform/
