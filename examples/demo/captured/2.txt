@@ -1,4 +1,4 @@
 [1;33mASK[0m
   deletes namespace shop on kind-whatdies-demo with 1 pod(s), 0 deployment(s), 0 statefulset(s), 1 PVC(s); its volumes
     have reclaim=Retain, so they outlive it
-  PVC data -> PV pvc-cf3ee475-e3e7-49dd-a9c6-c6657a5ec807 (1Gi) reclaim=Retain
+  PVC data -> PV pvc-262dd3f7-ff55-45e8-8533-46b17b2ee65e (1Gi) reclaim=Retain

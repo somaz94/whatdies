@@ -1,5 +1,5 @@
 [1;31mDENY[0m
   deletes namespace shop on kind-whatdies-demo with 1 pod(s), 0 deployment(s), 0 statefulset(s), 1 PVC(s)
-  PVC data -> PV pvc-cf3ee475-e3e7-49dd-a9c6-c6657a5ec807 (1Gi) reclaim=Delete: the volume and its data are deleted
+  PVC data -> PV pvc-262dd3f7-ff55-45e8-8533-46b17b2ee65e (1Gi) reclaim=Delete: the volume and its data are deleted
   -> Stop here. Do not retry this in another form (other flags, -target, state edits, a script). Show the user what is
      listed above and ask them to run it in their own terminal if they want it.

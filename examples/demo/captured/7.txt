@@ -1,0 +1,2 @@
+[1;33mASK[0m
+  aws_s3_bucket.invoices sets force_destroy to true, so a later destroy can lose data it would have kept

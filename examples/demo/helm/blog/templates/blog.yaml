@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: posts
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+# local-path binds a claim only once a pod uses it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: {{ .Release.Namespace }}
+spec:
+  containers:
+    - name: web
+      image: registry.k8s.io/pause:3.10
+      volumeMounts:
+        - name: posts
+          mountPath: /data
+  volumes:
+    - name: posts
+      persistentVolumeClaim:
+        claimName: posts

@@ -1,2 +1,6 @@
-[1;33mASK[0m
-  replaces terraform_data.customer_db
+[1;31mDENY[0m
+  uninstalls release blog on kind-whatdies-demo at revision 1, which removes 1 PersistentVolumeClaim, 1 Pod
+  deletes PVC posts in namespace blog on kind-whatdies-demo
+  PVC posts -> PV pvc-ce59a887-24c8-4e64-a57f-913e002c3692 (1Gi) reclaim=Delete: the volume and its data are deleted
+  -> Stop here. Do not retry this in another form (other flags, -target, state edits, a script). Show the user what is
+     listed above and ask them to run it in their own terminal if they want it.

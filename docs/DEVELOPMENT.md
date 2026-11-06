@@ -53,7 +53,7 @@ make e2e             # The same, and fail if the sequence of verdicts changes
 
 The demo creates a kind cluster named `whatdies-demo` with its own kubeconfig, and deletes it on exit. `test-e2e.yml` runs `make e2e`. On a pull request from a fork it waits for the `ok-to-test` label.
 
-The GIF in the README replays output saved from a real run, because the recording container has neither `kubectl` nor `terraform`. When a verdict or its wording changes, regenerate both:
+The GIF in the README replays output saved from a real run, because the recording container has none of `kubectl`, `helm` and `terraform`. When a verdict or its wording changes, regenerate both. The capture needs kind, helm and terraform, and downloads the AWS provider for the bucket scene, which it plans offline with fake credentials:
 
 ```bash
 make build && examples/demo/capture.sh

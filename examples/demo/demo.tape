@@ -30,16 +30,28 @@ Type "whatdies check 'kubectl delete ns shop'"
 Enter
 Sleep 4s
 
+Type `whatdies hook --codex <<< '{"tool_name":"Bash","tool_input":{"command":"kubectl delete ns shop"}}'; echo "exit $?"`
+Enter
+Sleep 5s
+
 Hide
 Type "clear"
 Enter
 Sleep 300ms
 Show
 
+Type "whatdies check 'helm uninstall blog -n blog'"
+Enter
+Sleep 4s
+
 Type "whatdies check 'terraform apply -auto-approve'"
 Enter
 Sleep 4s
 
 Type "whatdies check 'terraform apply tfplan'"
+Enter
+Sleep 3s
+
+Type "whatdies check 'terraform apply bucket.tfplan'"
 Enter
 Sleep 4s

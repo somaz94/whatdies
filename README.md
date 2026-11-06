@@ -5,7 +5,7 @@
 
 **See what your AI agent's infrastructure command would actually destroy, before it runs.**
 
-![whatdies gives the same kubectl command opposite verdicts as the volume's reclaim policy changes, and refuses a terraform apply with no saved plan](examples/demo/demo.gif)
+![whatdies gives the same kubectl command opposite verdicts as the volume's reclaim policy changes, blocks that ask under Codex, refuses a helm uninstall that deletes a volume and a terraform apply with no saved plan, and asks before a plan sets force_destroy on a bucket](examples/demo/demo.gif)
 
 Same command, opposite verdict. A guard that reads the command text cannot tell these apart, because the text is identical:
 

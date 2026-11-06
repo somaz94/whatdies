@@ -1,0 +1,4 @@
+apiVersion: v2
+name: blog
+description: A synthetic release that owns a volume, for the demo
+version: 0.1.0
