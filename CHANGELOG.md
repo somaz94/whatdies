@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.2.0](https://github.com/somaz94/whatdies/compare/v0.1.1...v0.2.0) (2026-11-06)
+
+### Features
+
+- support Codex, where an ask becomes a deny sent on stderr and the install checks the user's shell blocks ([ea1e61a](https://github.com/somaz94/whatdies/commit/ea1e61a0f0cd17b75c803582ac050f1907a38459))
+- judge helm uninstall and rollback from the release they act on and read --dry-run as helm does ([d89412f](https://github.com/somaz94/whatdies/commit/d89412fa6a6ec3a94d7da21e53d5883351e643c3))
+- ask when a terraform update turns off a guard such as force_destroy or deletion_protection ([b4db6b5](https://github.com/somaz94/whatdies/commit/b4db6b519da9c87ccdd67234925d553565f5af00))
+- decode saved terraform plans in process instead of running terraform show ([d41c50e](https://github.com/somaz94/whatdies/commit/d41c50ec2e237381f58f236aeebad7ddd74e0dfc))
+
+### Tests
+
+- track the saved plan fixtures that the tfplan ignore rule excluded ([b75bb51](https://github.com/somaz94/whatdies/commit/b75bb51a43c240120b3f862a230427bf00838004))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v0.1.1](https://github.com/somaz94/whatdies/compare/v0.1.0...v0.1.1) (2026-11-06)
 
 ### Bug Fixes
