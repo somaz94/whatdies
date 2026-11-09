@@ -88,7 +88,7 @@ Claude Code's `bypassPermissions` mode does not switch it off: in a headless run
 A guard that runs commands on an agent's behalf is itself a risk, so:
 
 - **It does not run `terraform plan`.** That would execute agent-written code, such as a `data "external"` block, before you approve anything. The agent runs the plan through your normal permissions, and whatdies reads the file. Terraform itself refuses a saved plan that has gone stale.
-- **It only ever calls `kubectl get`.** A server-side dry run of the delete needs delete rights, shows no cascade, and is one flag away from a real delete.
+- **Against a cluster it only calls `kubectl get`.** The one other call, `kubectl config current-context`, reads the local kubeconfig and contacts nothing. Helm releases are read the same way, from their release Secrets. A server-side dry run of the delete needs delete rights, shows no cascade, and is one flag away from a real delete.
 - **It will not probe a target the command chose.** With `--kubeconfig`, `--server`, an inline `KUBECONFIG=` or `./kubectl`, a credential plugin could run code the agent wrote, so it asks without looking.
 - **Plan values stay out of messages.** A plan holds secrets in clear text, so only addresses, types, actions and the guard attributes listed in [`guards.yaml`](internal/registry/guards.yaml) are decoded.
 - **It fails closed.** A timeout, a crash, missing credentials or an unreadable plan becomes ask.
@@ -102,6 +102,7 @@ This is a seatbelt for a mistaken agent, not a sandbox. It does not stop an agen
 - **Commands built at run time can get through.** Custom shell functions, a tool name assembled from variables, and scripts more than one level deep are not read. Run an agent you do not trust in a real sandbox.
 - **It covers Terraform, kubectl and Helm.** A direct `aws rds delete-db-instance`, `DROP DATABASE` or `rm -rf` is out of scope. Run a text-matching guard such as [destructive_command_guard](https://github.com/Dicklesworthstone/destructive_command_guard) alongside it. If that guard refuses `terraform plan -destroy`, which whatdies recommends before a destroy, allow it there.
 - **MCP tools are not checked.** The hook sees shell commands only.
+- **PowerShell commands are read as bash.** Claude Code's PowerShell tool is checked, but with a bash parser. PowerShell syntax such as `& terraform ...`, `Invoke-Expression` or `Start-Process` turns a deny into ask, and a tool name PowerShell assembles at run time is not seen.
 - **A plan format whatdies does not know weakens deny to ask.** It decodes the saved plan itself, so no terraform or provider binary runs before you approve. Anything in the file it does not recognise, such as a field a newer Terraform adds, makes the verdict ask rather than a guess.
 - **A plan file can be swapped** between the check and your approval of the prompt.
 - **The list of resource types that hold data is a judgement call.** It lives in [`stateful.yaml`](internal/registry/stateful.yaml), and a type missing from it still gets ask.
@@ -128,6 +129,13 @@ make build && examples/demo/demo.sh
 ## Development
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+<br/>
+
+## Related projects
+
+- [agentic-workflow-guard](https://github.com/somaz94/agentic-workflow-guard): Audits GitHub Actions workflows that run AI agents for prompt-injection exposure.
+- [agentport](https://github.com/somaz94/agentport): Converts Claude Code skills, slash commands and subagents to OpenAI Codex and Google Antigravity formats.
 
 <br/>
 
